@@ -1,5 +1,6 @@
 #include "mesh/MeshClosure.h"
 
+#include "Parallel.h"
 #include "gpu/MeshClosureJob.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
@@ -7,6 +8,8 @@
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "state/Registry.h"
+
+#include <atomic>
 
 namespace {
 uint32_t ClampWords(uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); }
@@ -17,9 +20,11 @@ uint32_t IncidenceWord(mtl::ComputeChain &chain) {
     return word.Offset;
 }
 
+void Mark(std::vector<uint32_t> &bits, uint32_t handle) { bits[handle / 32u] |= 1u << (handle % 32u); }
 void UniqueAscending(std::vector<uint32_t> &handles, uint32_t bound) {
+    if (std::ranges::adjacent_find(handles, std::ranges::greater_equal{}) == handles.end()) return;
     std::vector<uint32_t> bits((bound + 31u) / 32u);
-    for (const auto handle : handles) bits[handle / 32u] |= 1u << (handle % 32u);
+    for (const auto handle : handles) Mark(bits, handle);
     handles = SetBitHandles(bits);
 }
 struct HostIncidence {
@@ -30,25 +35,16 @@ struct HostIncidence {
     uint32_t CornerVertex(he::HH h) const { return CornerVertices[C.HalfedgeAddress(*h).Value()]; }
     uint32_t Fan(uint32_t v) const { return C.HasVertexBlock(v) ? C.Incoming(he::VH{v}).y : 0u; }
     uint32_t Clamped(uint64_t corners) const { return uint32_t(std::min<uint64_t>(corners, Corners)); }
-    void AddEndpoints(uint32_t e, std::vector<uint32_t> &vertices) const {
-        const auto h = C.EdgeHalfedge(e);
-        if (!h) return;
-        vertices.push_back(CornerVertex(h));
-        vertices.push_back(CornerVertex(C.Previous(h)));
-    }
-    void AddLoopVertices(uint32_t f, std::vector<uint32_t> &vertices) const {
-        const auto range = C.FaceRange(f);
-        for (auto h = range.x; h < range.y; ++h) vertices.push_back(CornerVertex(he::HH{h}));
-    }
-    void AddFan(Element element, uint32_t v, std::vector<uint32_t> &handles) const {
+    // Visits the faces, or the edges, incident to vertex `v`, each as often as the vertex's fan holds it.
+    void ForEachAround(Element element, uint32_t v, auto &&visit) const {
         if (!C.HasVertexBlock(v)) return;
         const auto run = C.Incoming(he::VH{v});
         for (const auto item : C.FanItems.subspan(run.x, run.y)) {
             const he::HH h{item.x};
-            const auto owner = element == Element::Face ? *C.FaceOf(h) : *C.Edge(h);
-            if (owner != InvalidOffset) handles.push_back(owner);
+            const auto owner = element == Element::Face ? item.y : *C.Edge(h);
+            if (owner != InvalidOffset) visit(owner);
             // The GPU vertex closure includes both edges incident to each face corner.
-            if (element == Element::Edge && item.y != InvalidOffset) handles.push_back(*C.Edge(C.Next(h)));
+            if (element == Element::Edge && item.y != InvalidOffset) visit(*C.Edge(C.Next(h)));
         }
     }
     uint32_t Sum(std::span<const uint32_t> vertices) const {
@@ -56,18 +52,30 @@ struct HostIncidence {
         for (const auto v : vertices) sum += Fan(v);
         return Clamped(sum);
     }
-    uint32_t Add(Element element, uint32_t handle, std::vector<uint32_t> &vertices) const {
-        const auto first = vertices.size();
+    // Visits the element's vertices and returns the corners it adds: a face's loop length, or the fans of its vertices.
+    uint32_t Visit(Element element, uint32_t handle, auto &&visit) const {
         if (element == Element::Face) {
-            AddLoopVertices(handle, vertices);
-            return uint32_t(vertices.size() - first);
+            const auto range = C.FaceRange(handle);
+            for (auto h = range.x; h < range.y; ++h) visit(CornerVertex(he::HH{h}));
+            return range.y - range.x;
         }
-        if (element == Element::Vertex) vertices.push_back(handle);
-        else AddEndpoints(handle, vertices);
-        return Sum(std::span{vertices}.subspan(first));
+        if (element == Element::Vertex) {
+            visit(handle);
+            return Clamped(Fan(handle));
+        }
+        const auto h = C.EdgeHalfedge(handle);
+        if (!h) return 0u;
+        const auto to = CornerVertex(h), from = CornerVertex(C.Previous(h));
+        visit(to);
+        visit(from);
+        return Clamped(uint64_t(Fan(to)) + Fan(from));
     }
+    uint32_t Add(Element element, uint32_t handle, std::vector<uint32_t> &vertices) const {
+        return Visit(element, handle, [&](uint32_t v) { vertices.push_back(v); });
+    }
+    uint32_t VertexBound() const { return uint32_t(C.VertexTable.size()) * MeshElementBlockSize; }
     uint32_t Fans(std::vector<uint32_t> &vertices) const {
-        UniqueAscending(vertices, uint32_t(C.VertexTable.size()) * MeshElementBlockSize);
+        UniqueAscending(vertices, VertexBound());
         return Sum(vertices);
     }
 };
@@ -244,15 +252,50 @@ ClosureSeed AroundVertices(const state::Registry &r, uint32_t id, Element elemen
         seed.Incidence = seed.LoopFans = incidence.Corners;
         return seed;
     }
-    std::vector<uint32_t> around;
-    for (const auto v : vertices.Vertices) incidence.AddFan(element, v, around);
-    UniqueAscending(around, DomainBound(a, record, element == Element::Face ? 2u : 3u));
+    // Each element around the vertices, and each vertex of those elements, marks its bit once.
+    std::vector<uint32_t> around((DomainBound(a, record, element == Element::Face ? 2u : 3u) + 31u) / 32u), loops((incidence.VertexBound() + 31u) / 32u);
+    for (const auto v : vertices.Vertices) incidence.ForEachAround(element, v, [&](uint32_t handle) { Mark(around, handle); });
     uint64_t corners = 0u;
-    for (const auto handle : around) corners += incidence.Add(element, handle, seed.Vertices);
-    seed.Count = uint32_t(around.size());
+    for (uint32_t w = 0u; w < around.size(); ++w) {
+        for (auto bits = around[w]; bits; bits &= bits - 1u) {
+            corners += incidence.Visit(element, w * 32u + uint32_t(std::countr_zero(bits)), [&](uint32_t v) { Mark(loops, v); });
+            ++seed.Count;
+        }
+    }
     seed.Incidence = incidence.Clamped(corners);
-    if (const auto fans = incidence.Fans(seed.Vertices); element == Element::Face) seed.LoopFans = fans;
+    seed.Vertices = SetBitHandles(loops);
+    if (const auto fans = incidence.Sum(seed.Vertices); element == Element::Face) seed.LoopFans = fans;
     return seed;
+}
+
+VertexNeighborhood MarkVertexNeighborhood(const state::Registry &r, uint32_t id, std::span<const uint32_t> vertices) {
+    const auto [meshes, a, record] = RecordAt(r, id);
+    const HostIncidence incidence{meshes, id};
+    VertexNeighborhood marks{.Listed = std::vector<uint32_t>(DomainBound(a, record, 0u) / 32u), .Faces = std::vector<uint32_t>(DomainBound(a, record, 2u) / 32u)};
+    if (std::ranges::any_of(vertices, [&](uint32_t v) { return v / 32u >= marks.Listed.size(); })) throw std::out_of_range("Element work handle exceeds its domain.");
+    // A mark skips the atomic write when its bit is already set, as it is for most corners of a dense neighborhood.
+    const auto mark = [](std::vector<uint32_t> &bits, uint32_t handle) {
+        const std::atomic_ref word{bits[handle / 32u]};
+        const auto bit = 1u << (handle % 32u);
+        if (!(word.load(std::memory_order_relaxed) & bit)) word.fetch_or(bit, std::memory_order_relaxed);
+    };
+    // Chunks of listed vertices, and then as many chunks of face words, mark concurrently.
+    constexpr size_t VertexChunk = 8192u;
+    const auto chunks = uint32_t((vertices.size() + VertexChunk - 1u) / VertexChunk);
+    ParallelFor(chunks, [&](uint32_t chunk) {
+        for (const auto v : vertices.subspan(chunk * VertexChunk, std::min(VertexChunk, vertices.size() - chunk * VertexChunk))) {
+            mark(marks.Listed, v);
+            incidence.ForEachAround(Element::Face, v, [&](uint32_t face) { mark(marks.Faces, face); });
+        }
+    });
+    marks.Vertices = marks.Listed;
+    const auto words = marks.Faces.size(), word_chunk = (words + chunks - 1u) / std::max(chunks, 1u);
+    ParallelFor(chunks, [&](uint32_t chunk) {
+        for (auto w = chunk * word_chunk; w < std::min(words, (chunk + 1u) * word_chunk); ++w) {
+            for (auto bits = marks.Faces[w]; bits; bits &= bits - 1u) incidence.Visit(Element::Face, uint32_t(w * 32u) + uint32_t(std::countr_zero(bits)), [&](uint32_t v) { mark(marks.Vertices, v); });
+        }
+    });
+    return marks;
 }
 
 FaceTriangles EncodeFaceTriangles(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces) {

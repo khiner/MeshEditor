@@ -43,7 +43,7 @@ inline float TopoWireShell(float3 a, float3 b) {
 
 inline void TopoWireVertices(TopoContext ctx, device const MeshTopologyJob &job, uint v, uint first) {
     const float fac = TopoWireRelative(ctx, job, v);
-    const float radius = TopoParam0Vertex(ctx, job, v) * 0.5f * fac, mid = radius * job.Param1;
+    const float radius = TopoUnit0Vertex(ctx, job, v) * 0.5f * fac, mid = radius * job.Param1;
     const float3 normal = NormalizeOrZero(float3(ctx.SrcVertexNormals(job)[v]));
     *ctx.Inward(job, first, 0u) = packed_float3(normal * (mid - radius));
     *ctx.Inward(job, first + 1u, 0u) = packed_float3(normal * (mid + radius));
@@ -104,7 +104,7 @@ inline void TopoWireFace(TopoContext ctx, device const MeshTopologyJob &job, uin
         if (dot(local_normal, face_normal) < 0.f) local_normal = -local_normal;
         if (dot(local_normal, local_normal) < 1e-12f) local_normal = face_normal;
         const float3 tangent = NormalizeOrZero(cross(a - b, local_normal));
-        const float radius = 0.5f * TopoParam0Vertex(ctx, job, v) * float3(*ctx.Inward(job, TopoWireCopy(ctx, job, v), 1u)).x;
+        const float radius = 0.5f * TopoUnit0Vertex(ctx, job, v) * float3(*ctx.Inward(job, TopoWireCopy(ctx, job, v), 1u)).x;
         const float shell = job.Flags & TopologyFlagEvenOffset ? TopoWireShell(a, b) : 1.f;
         ctx.WriteVertexMap(job, d, v, v, 0.f);
         ctx.SelectDstVertex(job, d);

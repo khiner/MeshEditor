@@ -122,6 +122,7 @@ void BisectFill(state::Registry &r, state::Entity subgraph) {
     Expose(r, subgraph, capped.Bisect, ParameterSocket<&Bisect::ClearInner>, "Clear Inner");
     Expose(r, subgraph, capped.Bisect, ParameterSocket<&Bisect::ClearOuter>, "Clear Outer");
     Expose(r, subgraph, capped.Fill, Out(r, capped.Fill), "Mesh");
+    Expose(r, subgraph, capped.Fill, Out(r, capped.Fill) + 1u, "Fill");
 }
 // The region where the plane crosses the mesh: the side behind it capped on the plane, then its vertices behind the plane deleted.
 void CrossSection(state::Registry &r, state::Entity subgraph) {

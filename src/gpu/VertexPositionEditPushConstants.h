@@ -43,6 +43,8 @@ enum class PositionEditOp : uint32_t {
     RelaxEdgeLoops,
     Transform,
     Attribute,
+    // Places each vertex from its position along the Input direction by Factor and the SecondInput direction by SecondFactor.
+    Place,
 };
 
 struct VertexPositionEditPushConstants {
@@ -60,7 +62,9 @@ struct VertexPositionEditPushConstants {
     SlotOffset Parameters;
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
-    NamedAttributeRef Input DEFAULT(); // A vertex attribute of the per-vertex input, a vec3 for Attribute and a float factor otherwise, or none to read Factor
+    NamedAttributeRef Input DEFAULT(); // A vertex attribute of the per-vertex input, a vec3 for Attribute and Place and a float factor otherwise, or none to read Factor
+    NamedAttributeRef SecondInput DEFAULT(); // A Place edit's vec3 vertex attribute of its second direction
+    float SecondFactor DEFAULT();
 };
 
 // One record's edited vertices: the listing pass writes every live vertex of Blocks into Handles, and the write pass stores each handle's position from Positions.

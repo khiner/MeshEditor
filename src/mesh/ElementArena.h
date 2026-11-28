@@ -85,8 +85,9 @@ struct ElementArena {
         return local < entries.size() && entries[local] != InvalidOffset && (Blocks.Get({entries[local], 1u})[0].Live[slot / 32u] >> (slot % 32u) & 1u);
     }
     // Visits the arena address runs of the set's `count` handles from `first`, one run per local block.
-    void ForEachAddressRun(ElementSetRef set, ElementHandle first, uint32_t count, auto &&visit) const {
-        const auto entries = Entries(set);
+    void ForEachAddressRun(ElementSetRef set, ElementHandle first, uint32_t count, auto &&visit) const { ForEachAddressRun(Entries(set), first, count, visit); }
+    // Visits those runs of a set whose table entries are `entries`.
+    static void ForEachAddressRun(std::span<const uint32_t> entries, ElementHandle first, uint32_t count, auto &&visit) {
         for (auto h = first.Value; h < first.Value + count;) {
             const auto end = std::min(first.Value + count, (h / BlockSize + 1u) * BlockSize);
             visit(Range{Resolve<BlockSize>(entries, ElementHandle{h}).Value(), end - h});

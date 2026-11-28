@@ -20,7 +20,7 @@ void RegisterMesh(Tables &tables) {
             TypeList<
                 MeshActiveElement, MeshHandle, EvaluatedMesh, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
                 MeshMaterialSlotSelection, ShadeSmoothAngle, TetBuffers,
-                graph::GraphNode, graph::NodeInputs, graph::GeometryGraph, graph::GraphNodes, graph::GraphActive, graph::NodeBypassed, graph::GraphLayout, graph::SubgraphItems, graph::SubgraphInterface, graph::Subgraph, graph::NodeError, graph::NodeErrors, graph::SourceState, graph::NodeResult, graph::NodeResults, graph::NodeExtrusion, graph::NodeExtrusions, graph::NodeHandle, graph::NodeHandles, graph::OperationHandle, graph::SelectionEditing, graph::BooleanPlacement, graph::BooleanPlacements, graph::GraphInstances, graph::GraphOwnedMesh, graph::NodeTheme, graph::InlineSelection, graph::PublishSelection, graph::OpValueBlock, graph::MaterialGraph>{},
+                graph::GraphNode, graph::NodeInputs, graph::GeometryGraph, graph::GraphNodes, graph::GraphActive, graph::NodeBypassed, graph::GraphLayout, graph::SubgraphItems, graph::SubgraphInterface, graph::Subgraph, graph::NodeError, graph::NodeErrors, graph::SourceState, graph::NodeResult, graph::NodeResults, graph::NodeTopology, graph::NodeTopologies, graph::NodeHandle, graph::NodeHandles, graph::OperationHandle, graph::SelectionEditing, graph::BooleanPlacement, graph::BooleanPlacements, graph::GraphInstances, graph::GraphOwnedMesh, graph::NodeTheme, graph::InlineSelection, graph::PublishSelection, graph::OpValueBlock, graph::MaterialGraph>{},
             graph::NodeKinds{}
         ),
         TypeList<>{},

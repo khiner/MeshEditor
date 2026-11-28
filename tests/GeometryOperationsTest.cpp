@@ -8,10 +8,12 @@
 #include "mesh/SharpnessOperations.h"
 #include "mesh/Simplify.h"
 
+#include <random>
+
 using namespace boost::ut;
 
 namespace {
-using ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::TopologyCases;
+using ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::TopologyCase, ::test::TopologyCases;
 
 // Writes selections as mask blocks into an arena the test owns, one block run per domain with room for the blocks an edit inserts.
 struct MaskWriter {
@@ -103,6 +105,87 @@ std::vector<std::vector<Point>> Shapes(const Mesh &mesh, Element element, std::s
     std::ranges::sort(shapes);
     return shapes;
 }
+// A record's shape by handle: its vertices' positions and normals, its faces' triangles and normals, and the aggregates of its vertex and face blocks.
+struct ExactShape {
+    std::vector<uint32_t> Vertices, Faces;
+    std::vector<vec3> Positions, VertexNormals, FaceNormals;
+    std::vector<uvec3> Triangles;
+    std::vector<vec4> Tangents; // Per corner in face order, and none without corner tangents
+    std::vector<SelectionAggregate> Aggregates;
+};
+// Whether two records hold the same vertices and faces at the same positions with the same triangles.
+bool SameMesh(const ExactShape &a, const ExactShape &b) { return a.Vertices == b.Vertices && a.Faces == b.Faces && a.Positions == b.Positions && a.Triangles == b.Triangles; }
+ExactShape ExactShapeOf(const MeshStore &meshes, uint32_t id) {
+    const Mesh mesh{meshes, id};
+    const auto handles = AllHandles(mesh);
+    const auto &a = meshes.Arenas();
+    const auto firsts = a.FaceTriangles.Buffer.GetSpan<uint32_t>();
+    const auto ranges = a.FaceRanges.Buffer.GetSpan<uvec2>();
+    const auto triangles = a.Triangles.Buffer.GetSpan<uvec3>();
+    ExactShape shape{.Vertices = handles.Vertices, .Faces = handles.Faces, .VertexNormals = VertexNormals(meshes, id, handles.Vertices), .FaceNormals = FaceNormals(meshes, id, handles.Faces)};
+    for (const auto v : mesh.vertices()) shape.Positions.push_back(test::Position(mesh, v));
+    for (const auto face : handles.Faces) {
+        const auto address = mesh.GetConnectivity().FaceAddress(face).Value();
+        for (uint32_t k = 0u; k + 2u < ranges[address].y - ranges[address].x; ++k) shape.Triangles.push_back(triangles[firsts[address] + k]);
+        if (const auto tangents = meshes.Get(id).CornerTangents; tangents.Count) {
+            for (uint32_t h = ranges[address].x; h < ranges[address].y; ++h) shape.Tangents.push_back(a.CornerTangents.Get(tangents, h));
+        }
+    }
+    using Domain = MeshStore::ElementDomain;
+    for (const auto &[domain, arena] : {std::pair{Domain::Vertex, &a.VertexAggregates}, std::pair{Domain::Face, &a.FaceAggregates}}) {
+        const auto aggregates = arena->Buffer.GetSpan<SelectionAggregate>();
+        for (const auto block : meshes.GetBlockList(id, domain).Blocks) shape.Aggregates.push_back(aggregates[block]);
+    }
+    return shape;
+}
+// The first index at which two runs differ in their bytes, or none.
+template<typename T> std::optional<size_t> FirstDifference(const std::vector<T> &a, const std::vector<T> &b) {
+    for (size_t i = 0u; i < std::min(a.size(), b.size()); ++i)
+        if (std::memcmp(&a[i], &b[i], sizeof(T)) != 0) return i;
+    if (a.size() != b.size()) return std::min(a.size(), b.size());
+    return std::nullopt;
+}
+
+// Whether every position of the mesh is finite.
+bool Finite(const Mesh &mesh) {
+    for (const auto v : mesh.vertices()) {
+        const auto p = test::Position(mesh, v);
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+    }
+    return true;
+}
+
+// A placing operator's task parameters and the scalar pairs a test places its vertices by.
+struct PlacingCase {
+    std::string_view Name;
+    MeshTopologyOp Op;
+    uint32_t Flags{}, Steps{1u};
+    // A wireframe's offset is a fixed second parameter, and an inset's second parameter is its depth scalar.
+    float Offset{};
+    std::vector<std::array<float, 2>> Scalars;
+};
+bool IsInset(const PlacingCase &c) { return c.Op == MeshTopologyOp::InsetRegion || c.Op == MeshTopologyOp::InsetIndividual; }
+// The case's task on record `id` with the scalars, the second of which is an inset's depth.
+MeshTopologyTask TaskOf(const PlacingCase &c, uint32_t id, float first, float second, GeometrySelection selection) {
+    return {.SourceId = id, .Op = c.Op, .Param0 = first, .Param1 = IsInset(c) ? second : c.Offset, .Flags = c.Flags, .Steps = c.Steps, .Selection = std::move(selection)};
+}
+const std::vector<std::array<float, 2>> InsetScalars{{.1f, 0.f}, {.25f, 0.f}, {0.f, .2f}, {0.f, -.15f}, {.1f, .2f}, {.2f, -.1f}};
+const std::array<PlacingCase, 13> PlacingCases{{
+    {"InsetRegion", MeshTopologyOp::InsetRegion, 0u, 1u, 0.f, InsetScalars},
+    {"InsetRegionEven", MeshTopologyOp::InsetRegion, TopologyFlagEvenOffset, 1u, 0.f, InsetScalars},
+    {"InsetIndividual", MeshTopologyOp::InsetIndividual, 0u, 1u, 0.f, InsetScalars},
+    {"InsetIndividualEven", MeshTopologyOp::InsetIndividual, TopologyFlagEvenOffset, 1u, 0.f, InsetScalars},
+    {"Poke", MeshTopologyOp::Poke, 0u, 1u, 0.f, {{.3f, 0.f}, {-.2f, 0.f}, {.07f, 0.f}}},
+    {"Solidify", MeshTopologyOp::Solidify, 0u, 1u, 0.f, {{.1f, 0.f}, {-.15f, 0.f}, {.4f, 0.f}}},
+    {"WireframeEvenBoundary", MeshTopologyOp::Wireframe, TopologyFlagEvenOffset | TopologyFlagWireBoundary, 1u, .3f, {{.02f, 0.f}, {.05f, 0.f}, {.1f, 0.f}}},
+    {"WireframeRelativeReplace", MeshTopologyOp::Wireframe, TopologyFlagWireRelative | TopologyFlagWireReplace, 1u, -.5f, {{.02f, 0.f}, {.05f, 0.f}, {.1f, 0.f}}},
+    {"BevelEdges", MeshTopologyOp::BevelEdges, 0u, 1u, 0.f, {{.05f, 0.f}, {.1f, 0.f}, {.2f, 0.f}}},
+    {"BevelEdgesSegments", MeshTopologyOp::BevelEdges, 0u, 3u, 0.f, {{.05f, 0.f}, {.1f, 0.f}, {.2f, 0.f}}},
+    {"BevelVertices", MeshTopologyOp::BevelVertices, 0u, 2u, 0.f, {{.05f, 0.f}, {.1f, 0.f}, {.2f, 0.f}}},
+    {"BevelVerticesSingle", MeshTopologyOp::BevelVertices, 0u, 1u, 0.f, {{.05f, 0.f}, {.1f, 0.f}, {.2f, 0.f}}},
+    {"PokeZero", MeshTopologyOp::Poke, 0u, 1u, 0.f, {{0.f, 0.f}}},
+}};
+
 struct Outcome {
     bool Changed, Copied;
     std::array<std::vector<std::vector<Point>>, 9> Elements;
@@ -511,6 +594,287 @@ void RegisterGeometryOperationsTests() {
                 expect(std::ranges::equal(normals(listed_id), normals(every_id)));
             };
         }
+    };
+    "a placing operator's exported directions place its vertices exactly as the operator does"_test = [] {
+        GeometryFixture f;
+        // A shape with tangents takes one at every corner, which both forms leave at zero on the faces at the vertices they move.
+        const auto with_tangents = [](MeshSource source) {
+            source.Attrs.Tangents.emplace();
+            for (uint32_t v = 0u; v < source.Data.Positions.size(); ++v) source.Attrs.Tangents->push_back({float(v % 7u) - 3.f, float(v % 5u) - 2.f, 1.f, 1.f});
+            return source;
+        };
+        const std::array<std::pair<std::string_view, MeshSource>, 4> shapes{{
+            {"UVSphere", primitive::CreateMesh(primitive::UVSphere{.Slices = 12, .Stacks = 6})},
+            {"Cube", primitive::CreateMesh(primitive::Cube{})},
+            {"UVSphere with tangents", with_tangents(primitive::CreateMesh(primitive::UVSphere{.Slices = 12, .Stacks = 6}))},
+            {"Cube with tangents", with_tangents(primitive::CreateMesh(primitive::Cube{}))},
+        }};
+        for (const auto &[shape_name, source] : shapes) {
+            for (const auto &c : PlacingCases) {
+                for (const auto [first, second] : c.Scalars) {
+                    boost::ut::test(std::format("{} {} {} {}", shape_name, c.Name, first, second)) = [&] {
+                        const auto placed = f.Create(source);
+                        const auto task = TaskOf(c, placed, first, second, test::SelectionWhere(f.Get(placed), [&](he::VH v) { return test::Position(f.Get(placed), v).x > 0.f; }));
+                        f.Run(task);
+                        const auto a = ExactShapeOf(f.Store(), placed);
+                        const auto exported = f.Create(source);
+                        // Scalars at zero place no vertex, and the emission of the others leaves the faces they move without tangents.
+                        const bool moves = first != 0.f || (IsInset(c) && second != 0.f);
+                        auto zero = TaskOf(c, exported, 0.f, 0.f, std::get<GeometrySelection>(task.Selection));
+                        if (moves) zero.Flags |= TopologyFlagPlacedMove;
+                        zero.Places = true;
+                        f.Run(zero);
+                        const auto placed_vertices = PlacedVertices(f.Store(), exported);
+                        expect(fatal(!placed_vertices.empty()));
+                        const auto tangents_before_place = ExactShapeOf(f.Store(), exported).Tangents;
+                        const auto directions = PlacementAttributes(f.Store(), exported);
+                        const PositionOperationTarget target{.StoreId = exported, .Selection = GeometrySelection{.Vertices = placed_vertices}};
+                        expect(fatal(ExecuteGeometryPositions(f.Scene, target, PositionEditOp::Place, first, 1u, {.Placement = PositionPlacement{f.Store().AttributeRef(directions[0]), f.Store().AttributeRef(directions[1]), IsInset(c) ? second : 0.f}}).has_value() == moves));
+                        f.Audit();
+                        const auto b = ExactShapeOf(f.Store(), exported);
+                        const auto check = [](std::string_view what, const auto &x, const auto &y) {
+                            const auto at = FirstDifference(x, y);
+                            expect(!at.has_value()) << what << "differ first at" << at.value_or(0u);
+                        };
+                        check("vertices", a.Vertices, b.Vertices);
+                        check("faces", a.Faces, b.Faces);
+                        check("positions", a.Positions, b.Positions);
+                        check("triangles", a.Triangles, b.Triangles);
+                        check("face normals", a.FaceNormals, b.FaceNormals);
+                        check("vertex normals", a.VertexNormals, b.VertexNormals);
+                        check("block aggregates", a.Aggregates, b.Aggregates);
+                        check("tangents", a.Tangents, b.Tangents);
+                        check("tangents before the placement", a.Tangents, tangents_before_place);
+                        if (a.Tangents.empty()) return;
+                        // Every face at a vertex the scalars moved carries zero tangents, and every other face keeps its own.
+                        const Mesh mesh{f.Store(), placed};
+                        bool placed_clear = true, others_kept = true;
+                        size_t corner = 0u;
+                        for (const auto face : a.Faces) {
+                            const auto vertices = test::FaceVertices(mesh, he::FH{face}) | std::ranges::to<std::vector>();
+                            const bool at_placed = moves && std::ranges::any_of(vertices, [&](he::VH v) { return std::ranges::binary_search(placed_vertices, *v); });
+                            for (size_t k = 0u; k < vertices.size(); ++k, ++corner) {
+                                const bool zero = a.Tangents[corner] == vec4{};
+                                placed_clear = placed_clear && (!at_placed || zero);
+                                others_kept = others_kept && (at_placed || !zero);
+                            }
+                        }
+                        expect(placed_clear) << "a face at a moved vertex carries a tangent";
+                        expect(others_kept) << "a face away from the moved vertices lost a tangent";
+                    };
+                }
+            }
+        }
+    };
+    "a placing operator leaves every position finite on edges without length and faces without area"_test = [] {
+        GeometryFixture f;
+        // A cube with the first `count` corners of its first face at one point, which leaves an edge without length and then a face without area.
+        const auto collapsed = [](uint32_t count) {
+            auto source = primitive::CreateMesh(primitive::Cube{});
+            for (uint32_t k = 1u; k < count; ++k) source.Data.Positions[source.Data.FaceCorners[k]] = source.Data.Positions[source.Data.FaceCorners[0u]];
+            return source;
+        };
+        const auto everything = [](const Mesh &mesh) { return test::SelectionWhere(mesh, [](he::VH) { return true; }); };
+        // A cube whose every face extruded in place holds each face's copy at its source and side faces without area.
+        const auto extruded = [&] {
+            const auto id = f.Create(primitive::CreateMesh(primitive::Cube{}));
+            f.Run({.SourceId = id, .Op = MeshTopologyOp::ExtrudeFacesIndividual, .Selection = everything(f.Get(id))});
+            return id;
+        };
+        const std::array<std::pair<std::string_view, std::function<uint32_t()>>, 3> shapes{{
+            {"an edge without length", [&] { return f.Create(collapsed(2u)); }},
+            {"a face without area", [&] { return f.Create(collapsed(4u)); }},
+            {"faces extruded in place", extruded},
+        }};
+        for (const auto &[shape_name, create] : shapes) {
+            for (const auto &c : PlacingCases) {
+                for (const auto [first, second] : c.Scalars) {
+                    boost::ut::test(std::format("{} {} {} {}", shape_name, c.Name, first, second)) = [&] {
+                        const auto id = create();
+                        f.Run(TaskOf(c, id, first, second, everything(f.Get(id))));
+                        expect(Finite(f.Get(id))) << "a position is not finite";
+                    };
+                }
+            }
+        }
+    };
+    "a chain of placing operators leaves a mesh that passes its audit, with finite positions and faces that hold each vertex once"_test = [] {
+        GeometryFixture f;
+        std::mt19937 rng{11u};
+        const auto below = [&](size_t n) { return std::uniform_int_distribution<size_t>{0u, n - 1u}(rng); };
+        const std::array<PrimitiveParameters, 8> primitives{primitive::Plane{.Subdivisions = {2u, 2u}}, primitive::Circle{.Segments = 8}, primitive::Cube{}, primitive::IcoSphere{.Subdivisions = 1}, primitive::UVSphere{.Slices = 12, .Stacks = 6}, primitive::QuadSphere{.Segments = 2}, primitive::Torus{.MajorSegments = 12, .MinorSegments = 6}, primitive::Cylinder{.Slices = 8}};
+        for (uint32_t trial = 0u; trial < 500u; ++trial) {
+            const auto shape = below(primitives.size());
+            const auto id = f.Create(primitive::CreateMesh(primitives[shape]));
+            auto chain = std::format("shape {}", shape);
+            bool valid = true;
+            for (size_t k = 0u, count = 1u + below(4); valid && k < count; ++k) {
+                const auto &c = PlacingCases[below(PlacingCases.size())];
+                const float scalar = below(4) == 0u ? 0.f : .02f * float(1u + below(3));
+                // Every element, the elements at positive x, or the elements among two vertices in three.
+                const auto mode = below(3);
+                const auto mesh = f.Get(id);
+                const auto selection = test::SelectionWhere(mesh, [&](he::VH v) { return mode == 0u || (mode == 1u ? test::Position(mesh, v).x > 0.f : (*v % 3u) != 0u); });
+                chain += std::format(", {} by {} on selection {}", c.Name, scalar, mode);
+                (void)ExecuteGeometryTopology(f.Scene, std::array{TaskOf(c, id, scalar, -scalar, selection)});
+                std::string why;
+                valid = f.Store().Audit(why);
+                expect(valid) << chain << why;
+                if (!valid) break;
+                const auto after = f.Get(id);
+                const bool finite = Finite(after);
+                bool distinct = true;
+                for (const auto face : after.faces()) {
+                    auto vertices = test::FaceVertices(after, face) | std::views::transform([](he::VH v) { return *v; }) | std::ranges::to<std::vector>();
+                    std::ranges::sort(vertices);
+                    distinct = distinct && std::ranges::adjacent_find(vertices) == vertices.end();
+                }
+                valid = finite && distinct;
+                expect(finite) << chain << "leaves a position that is not finite";
+                expect(distinct) << chain << "leaves a face that holds a vertex twice";
+            }
+            f.Store().Release(id);
+        }
+    };
+    "a bevel of some edges of a closed mesh leaves it closed"_test = [] {
+        GeometryFixture f;
+        const std::array<std::pair<std::string_view, PrimitiveParameters>, 5> shapes{{{"Cube", primitive::Cube{}}, {"IcoSphere", primitive::IcoSphere{.Subdivisions = 1}}, {"UVSphere", primitive::UVSphere{.Slices = 12, .Stacks = 6}}, {"QuadSphere", primitive::QuadSphere{.Segments = 2}}, {"Torus", primitive::Torus{.MajorSegments = 12, .MinorSegments = 6}}}};
+        for (const auto &[shape_name, shape] : shapes) {
+            for (const uint32_t segments : {1u, 3u}) {
+                // The edges at positive x, the edges among two vertices in three, and each of the first edges alone.
+                for (uint32_t mode = 0u; mode < 10u; ++mode) {
+                    boost::ut::test(std::format("{} {} segments selection {}", shape_name, segments, mode)) = [&] {
+                        const auto id = f.Create(primitive::CreateMesh(shape));
+                        const auto mesh = f.Get(id);
+                        auto selection = test::SelectionWhere(mesh, [&](he::VH v) { return mode == 0u ? test::Position(mesh, v).x > 0.f : (*v % 3u) != 0u; });
+                        if (mode >= 2u) {
+                            if (mode - 2u >= selection.Edges.size()) return;
+                            const auto ends = test::EdgeVertices(mesh, he::EH{selection.Edges[mode - 2u]});
+                            selection = {.Vertices = {std::min(*ends[0], *ends[1]), std::max(*ends[0], *ends[1])}, .Edges = {selection.Edges[mode - 2u]}};
+                        }
+                        f.Run({.SourceId = id, .Op = MeshTopologyOp::BevelEdges, .Param0 = .05f, .Steps = segments, .Selection = selection});
+                        expect(f.Get(id).HasClosedSurface());
+                        f.Store().Release(id);
+                    };
+                }
+            }
+        }
+    };
+    "an edge bevel leaves an edge that is not between two faces as it is"_test = [] {
+        GeometryFixture f;
+        const auto area = [&](uint32_t id) {
+            const auto mesh = f.Get(id);
+            float total = 0.f;
+            for (const auto face : mesh.faces()) {
+                const auto vertices = test::FaceVertices(mesh, face) | std::ranges::to<std::vector>();
+                vec3 sum{};
+                for (size_t k = 1u; k + 1u < vertices.size(); ++k) sum += Cross(test::Position(mesh, vertices[k]) - test::Position(mesh, vertices[0]), test::Position(mesh, vertices[k + 1u]) - test::Position(mesh, vertices[0]));
+                total += .5f * Length(sum);
+            }
+            return total;
+        };
+        // A flat mesh keeps its outline, so the bevel of any of its edges covers the area it covered.
+        for (const auto &shape : {PrimitiveParameters{primitive::Plane{.Subdivisions = {2u, 2u}}}, PrimitiveParameters{primitive::Circle{.Segments = 8}}}) {
+            for (const uint32_t segments : {1u, 3u}) {
+                for (const bool half : {false, true}) {
+                    const auto id = f.Create(primitive::CreateMesh(shape));
+                    const auto mesh = f.Get(id);
+                    const float before = area(id);
+                    f.Run({.SourceId = id, .Op = MeshTopologyOp::BevelEdges, .Param0 = .05f, .Steps = segments, .Selection = test::SelectionWhere(mesh, [&](he::VH v) { return !half || test::Position(mesh, v).x > -.5f; })});
+                    expect(std::abs(area(id) - before) < 1e-4f) << "area" << area(id) << "from" << before;
+                }
+            }
+        }
+        // Three quads around one edge, whose bevel changes nothing.
+        const auto book = f.Create(MeshData{{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {-1.f, 0.f, 1.f}, {-1.f, 1.f, 1.f}, {-1.f, 0.f, -1.f}, {-1.f, 1.f, -1.f}}, {{0u, 2u, 3u, 1u}, {0u, 1u, 5u, 4u}, {0u, 6u, 7u, 1u}}});
+        const auto unbeveled = ExactShapeOf(f.Store(), book);
+        const auto spine = test::SelectionWhere(f.Get(book), [](he::VH v) { return *v < 2u; });
+        expect(fatal(spine.Edges.size() == 1u));
+        f.Run({.SourceId = book, .Op = MeshTopologyOp::BevelEdges, .Param0 = .1f, .Selection = spine});
+        expect(SameMesh(ExactShapeOf(f.Store(), book), unbeveled));
+    };
+    "a bevel reads its own elements of a selection that holds other elements too"_test = [] {
+        GeometryFixture f;
+        // A cube's element handles select other vertices, edges and faces of the cube subdivided twice.
+        const auto handles = [](uint32_t count) { return std::views::iota(0u, count) | std::ranges::to<std::vector>(); };
+        const GeometrySelection every{.Vertices = handles(8u), .Edges = handles(12u), .Faces = handles(6u)};
+        const auto beveled = [&](MeshTopologyOp op, const GeometrySelection &selection) {
+            const auto id = f.Create(primitive::CreateMesh(primitive::Cube{}));
+            for (uint32_t level = 0u; level < 2u; ++level) f.Run({.SourceId = id, .Op = MeshTopologyOp::Subdivide, .Param0 = 1.f, .Flags = TopologyFlagSelectAll});
+            f.Run({.SourceId = id, .Op = op, .Param0 = .02f, .Steps = 3u, .Selection = selection});
+            return ExactShapeOf(f.Store(), id);
+        };
+        for (const auto &[op, own] : {std::pair{MeshTopologyOp::BevelVertices, GeometrySelection{.Vertices = every.Vertices}}, std::pair{MeshTopologyOp::BevelEdges, GeometrySelection{.Edges = every.Edges}}}) {
+            expect(SameMesh(beveled(op, own), beveled(op, every)));
+        }
+    };
+    "a face carries the tangents its texture coordinates give it after a topology operator, or none"_test = [] {
+        GeometryFixture f;
+        // The patchwork flattened, with texture coordinates along x and y and a tangent along x at every corner.
+        const auto flat = [] {
+            MeshSource source{.Data = Patchwork()};
+            source.Attrs.TexCoords0.emplace();
+            for (auto &position : source.Data.Positions) {
+                position.z = 0.f;
+                source.Attrs.TexCoords0->push_back({.25f * position.x, .25f * position.y});
+            }
+            source.Attrs.Tangents = std::vector<vec4>(source.Data.Positions.size(), vec4{1.f, 0.f, 0.f, 1.f});
+            return source;
+        };
+        // The operator table, then a Catmull-Clark level and a curved subdivision of every face.
+        std::vector<TopologyCase> cases{TopologyCases.begin(), TopologyCases.end()};
+        cases.push_back({"CatmullClark", {}, {.Op = MeshTopologyOp::Subdivide, .Param0 = 1.f, .Flags = TopologyFlagSelectAll | TopologyFlagFacePoints}});
+        cases.push_back({"CurvedSubdivide", {}, {.Op = MeshTopologyOp::Subdivide, .Param0 = 1.f, .Flags = TopologyFlagSelectAll | TopologyFlagBezier}});
+        // Expects each tangent of the record to follow its face's texture direction.
+        const auto expect_followed = [&](uint32_t result) {
+            const auto &meshes = f.Store();
+            const Mesh mesh{meshes, result};
+            const auto &record = meshes.Get(result);
+            if (!record.CornerTangents.Count) return;
+            const auto &a = meshes.Arenas();
+            const auto ranges = a.FaceRanges.Buffer.GetSpan<uvec2>();
+            uint32_t carried = 0u, stray = 0u;
+            for (const auto face : mesh.faces()) {
+                const auto range = ranges[mesh.GetConnectivity().FaceAddress(*face).Value()];
+                const auto vertices = test::FaceVertices(mesh, face) | std::ranges::to<std::vector>();
+                // The direction texture coordinate u grows along the face, from the first corner triple that spans area in space and in texture coordinates.
+                // A face without area in space shows no tangent.
+                vec3 along{};
+                bool area = false;
+                for (uint32_t k = 1u; k + 1u < vertices.size() && Length(along) == 0.f; ++k) {
+                    const auto p1 = test::Position(mesh, vertices[k]) - test::Position(mesh, vertices[0]), p2 = test::Position(mesh, vertices[k + 1u]) - test::Position(mesh, vertices[0]);
+                    if (Length(Cross(p1, p2)) <= 1e-8f) continue;
+                    area = true;
+                    const auto uv0 = a.CornerUvs[0].Get(record.CornerUvs[0], range.x);
+                    const auto uv1 = a.CornerUvs[0].Get(record.CornerUvs[0], range.x + k) - uv0, uv2 = a.CornerUvs[0].Get(record.CornerUvs[0], range.x + k + 1u) - uv0;
+                    const float det = uv1.x * uv2.y - uv2.x * uv1.y;
+                    if (std::abs(det) > 1e-8f) along = Normalize((p1 * uv2.y - p2 * uv1.y) * (det < 0.f ? -1.f : 1.f));
+                }
+                if (!area) continue;
+                for (uint32_t h = range.x; h < range.y; ++h) {
+                    const auto tangent = a.CornerTangents.Get(record.CornerTangents, h);
+                    const vec3 direction{tangent.x, tangent.y, tangent.z};
+                    if (Length(direction) == 0.f) continue;
+                    ++carried;
+                    if (Length(along) == 0.f || Dot(Normalize(direction), along) < 1.f - 1e-3f) ++stray;
+                }
+            }
+            expect(stray == 0u) << stray << "of" << carried << "tangents differ from their face's texture direction";
+        };
+        for (const auto &c : cases) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto id = f.Create(flat());
+                auto task = (c.Task.Flags & TopologyFlagSelectAll) ? std::optional{c.Task} : PlanCase(c, f.Scene, f.Get(id));
+                expect(fatal(task.has_value()));
+                task->SourceId = id;
+                expect_followed(f.Run(*task).GeometryId);
+            };
+        }
+        boost::ut::test("Simplify") = [&] {
+            const auto id = f.Create(flat());
+            expect(SimplifyGeometry(f.Scene, id, AllHandles(f.Get(id)), 0.f, .5f, [&](const MeshTopologyTask &task) { f.Run(task); }));
+            expect_followed(id);
+        };
     };
     "position and sharpness operations read mask selections like handle lists"_test = [] {
         GeometryFixture f;

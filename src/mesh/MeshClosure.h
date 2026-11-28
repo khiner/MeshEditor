@@ -59,6 +59,12 @@ ClosureSeed FaceSeed(const state::Registry &, uint32_t id, const BufferArena<uin
 // The faces or edges around the host vertices of a seed read on the host, as `work`, that domain's work of a vertex level over that seed.
 // Its bounds and vertices are read on the host, so the face or edge level over it records before the chain submits.
 ClosureSeed AroundVertices(const state::Registry &, uint32_t id, Element, ElementWork work, const ClosureSeed &vertices);
+// Bit words by handle over each domain's block bound.
+struct VertexNeighborhood {
+    std::vector<uint32_t> Listed, Vertices, Faces;
+};
+// The listed vertices, the faces around them, and the vertices of those faces with the listed vertices, marked on the host.
+VertexNeighborhood MarkVertexNeighborhood(const state::Registry &, uint32_t id, std::span<const uint32_t> vertices);
 
 // The derived triangles of finished faces, checked against the mesh's face and triangle ownership.
 // Count is valid once the chain has submitted.

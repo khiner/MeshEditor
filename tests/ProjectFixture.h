@@ -34,7 +34,7 @@
 // Compares rendered images, which --no-render skips.
 inline bool Render{true};
 // The first and last seed of the random history walks.
-inline std::array<uint32_t, 2> WalkSeeds{2u, 2u};
+inline std::array<uint32_t, 2> WalkSeeds{3u, 3u};
 
 inline const auto RiggedSimple = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf";
 

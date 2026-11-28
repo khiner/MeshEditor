@@ -187,6 +187,12 @@ std::optional<mx::Type> OutputType(const state::Registry &r, const CookPlan &pla
         if (!resolved.Declaration || resolved.Ports[output] == NoNode) return {};
         return resolved.Outputs[output];
     }
+    // A Capture's value output holds the type its value input reads.
+    if (kind == KindOf<Capture> && socket == FieldOutput(kind)) {
+        const auto &link = plan.Inputs[plan.InputFirst[node] + 1u];
+        if (link.FromNode != NoNode) return OutputType(r, plan, layout, link.FromNode, link.FromSocket);
+        return link.Constant ? std::optional{ValueTypeOf(link.Constant->Type)} : std::nullopt;
+    }
     const auto types = NodeSockets(plan, node)[socket].Types;
     if (!std::has_single_bit(types) || !(types & (NumericTypes | MatrixTypes | TypeBit(DataType::Image)))) return {};
     return ValueTypeOf(DataType(std::countr_zero(types)));

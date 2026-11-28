@@ -290,6 +290,20 @@ void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, std::spa
     RepairTriangleRender(r, chain, repairs, fresh);
 }
 
+bool RetiresEveryCluster(state::Registry &r, const MeshTopologyEdit &edit) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &record = meshes.Get(edit.StoreId);
+    // Fewer changed triangles than finest clusters leave a cluster live.
+    if (!record.Level0Count || edit.ChangedTriangles.Count < record.Level0Count || edit.ChangedTriangles.Triangles.Storage.Slot == InvalidSlot) return false;
+    const auto owners = meshes.Render().ElementMeshlets[0].View(record.ElementMeshlets[0]);
+    IndexMarks clusters;
+    uint32_t count = 0u;
+    ForEachWorkElement(edit.Chain.Scratch, edit.ChangedTriangles.Triangles, [&](uint32_t triangle) {
+        if (const auto owner = owners[triangle]; owner != InvalidOffset) count += clusters.Mark(owner);
+    });
+    return count == record.Level0Count;
+}
+
 void AccumulateTriangleEdits(state::Registry &r, AccumulatedTriangleEdits &edits, const MeshTopologyEdit &edit) {
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &storage = edit.Chain.Scratch;

@@ -344,3 +344,6 @@ inline float3 NormalizeOrZero(float3 n) {
     const float len = length(n);
     return len > 0.0f ? n / len : float3(0.0f);
 }
+// A displaced vertex's position: its base moved along each direction by that direction's scalar.
+// Each component rounds once per direction, so every kernel places a vertex to the same bits.
+inline float3 PlaceVertex(float3 base, float3 first, float a, float3 second, float b) { return fma(second, float3(b), fma(first, float3(a), base)); }

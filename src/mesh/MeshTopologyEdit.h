@@ -62,6 +62,8 @@ private:
     bool Published{}, Finished{};
     std::optional<GeometryMasks> SelectionOutput;
     Element StoreSelectionSource;
+    TopologyOutputs NodeOutputs;
+    bool Places;
     MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the task's source closures, or returns none when the task selects no source.
     std::optional<Closures> RecordClosures(state::Registry &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);

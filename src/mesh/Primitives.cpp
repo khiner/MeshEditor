@@ -381,6 +381,16 @@ MeshSource Generate(const Cylinder &p, bool texcoords) {
 }
 } // namespace
 
+// The bottom cap's faces come first, then the side's, then the top cap's.
+std::array<CylinderPart, 3> CylinderParts(const Cylinder &p) {
+    const auto [radius, height, top, slices, cap] = p;
+    const bool tip = top.value_or(radius) <= 0.f;
+    const uint32_t caps = cap == FillType::None ? 0u : cap == FillType::Face ? 1u :
+                                                                               slices;
+    const auto end = [&](uint32_t faces, uint32_t first_face, uint32_t first_vertex, uint32_t vertices) { return faces ? CylinderPart{Element::Face, first_face, faces} : CylinderPart{Element::Vertex, first_vertex, vertices}; };
+    return {end(tip ? 0u : caps, caps + slices, slices, tip ? 1u : slices), end(caps, 0u, 0u, slices), CylinderPart{Element::Face, caps, slices}};
+}
+
 MeshSource CreateMesh(const PrimitiveParameters &shape, bool texcoords) {
     auto source = std::visit([texcoords](const auto &s) { return Generate(s, texcoords); }, shape);
     source.FlatShaded = true;

@@ -753,11 +753,11 @@ state::Entity CopyGraph(state::Registry &r, state::Entity from, uint32_t drawn) 
     };
     for (const auto node : originals) {
         const auto copy = copies(node);
-        if (const auto *result = r.try_get<const NodeResult>(node)) r.emplace<NodeResult>(copy, NodeResult{copied(result->Input), result->State, result->StoreId});
+        if (const auto *result = r.try_get<const NodeResult>(node)) r.emplace<NodeResult>(copy, NodeResult{copied(result->Input), result->State, result->StoreId, result->Outputs});
         if (const auto *placement = r.try_get<const BooleanPlacement>(node)) r.emplace<BooleanPlacement>(copy, BooleanPlacement{*placement});
         if (const auto *results = r.try_get<const NodeResults>(node)) {
             NodeResults kept;
-            for (const auto &[path, result] : results->Values) kept.Values.emplace(path, NodeResult{copied(result.Input), result.State, result.StoreId});
+            for (const auto &[path, result] : results->Values) kept.Values.emplace(path, NodeResult{copied(result.Input), result.State, result.StoreId, result.Outputs});
             r.emplace<NodeResults>(copy, std::move(kept));
         }
         if (const auto *placements = r.try_get<const BooleanPlacements>(node)) r.emplace<BooleanPlacements>(copy, BooleanPlacements{*placements});

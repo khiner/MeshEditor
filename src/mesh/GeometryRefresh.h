@@ -33,7 +33,7 @@ struct PositionRefresh {
     const PositionOperationChange *Change;
 };
 // Records canonical tessellation, normals and bounds around the vertices each position operation moved, every record in one batch.
-// Submits the chain once to read the neighborhoods of the operations that did not move every vertex.
+// Marks the neighborhood of each operation that did not move every vertex on the host, so the refresh records without a submit.
 // Returns each record's triangles whose tessellation changed, as work in chain.Scratch whose count the chain's next submit reports, or no work for a mesh without polygons to retessellate.
 std::vector<ElementWork> EncodePositionRefresh(state::Registry &, mtl::ComputeChain &, std::span<const PositionRefresh>);
 // Completes position operations, including sparse canonical tessellation, normals and bounds.

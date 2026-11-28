@@ -111,6 +111,12 @@ constexpr std::array TopologyChain{Poke, Poke, Poke};
 constexpr std::array MixedChain{Smooth, Poke, Fatten, Smooth, Poke, Fatten};
 constexpr std::array EditSpecs{
     EditSpec{SingleEdit::Inset, "inset", Element::Face, nullptr, [](uint32_t i, bool all) { action::Emit(action::mesh::Inset{.Thickness = 0.0001f * float(i + 1), .Individual = all}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Inset, "inset-depth", Element::Face, nullptr, [](uint32_t i, bool all) { action::Emit(action::mesh::Inset{.Thickness = 0.0001f * float(i + 1), .Depth = 0.0002f * float(i + 1), .Individual = all}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Plain, "extrude-drag", Element::Face, nullptr, [](uint32_t i, bool all) { action::Emit(action::mesh::Extrude{.Mode = all ? action::mesh::ExtrudeMode::FacesIndividual : action::mesh::ExtrudeMode::Region, .OffsetScale = 0.0001f * float(i + 1)}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Plain, "poke-drag", Element::Face, nullptr, [](uint32_t i, bool) { action::Emit(action::mesh::Poke{.Offset = 0.0001f * float(i + 1)}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Plain, "bevel-drag", Element::Edge, nullptr, [](uint32_t i, bool) { action::Emit(action::mesh::Bevel{.Width = 0.0001f * float(i + 1)}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Plain, "solidify-drag", Element::Face, nullptr, [](uint32_t i, bool) { action::Emit(action::mesh::Solidify{.Thickness = 0.0001f * float(i + 1)}, action::Phase::Stage); }},
+    EditSpec{SingleEdit::Plain, "wireframe-drag", Element::Face, nullptr, [](uint32_t i, bool) { action::Emit(action::mesh::Wireframe{.Thickness = 0.0001f * float(i + 1)}, action::Phase::Stage); }},
     EditSpec{SingleEdit::Position, "position", Element::Vertex, nullptr, [](uint32_t i, bool) { action::Emit(action::view::TransformElements{{.P = {0.0001f * float(i + 1), 0.f, 0.f}}}, action::Phase::Stage); }},
     EditSpec{SingleEdit::Join, "join", Element::Face, [] { return Edit(action::mesh::TrisToQuads{}); }},
     EditSpec{SingleEdit::Plain, "position-chain", Element::Face, nullptr, nullptr, PositionChain},

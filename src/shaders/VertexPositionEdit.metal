@@ -11,7 +11,7 @@ inline float3 EditVertexNormal(device const BindlessSet &b, constant VertexPosit
 // The per-vertex input from the Input attribute, or the factor where the edit has none.
 inline float4 EditInput(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
     if (pc.Input.ValuesSlot == InvalidSlot) return float4(pc.Factor);
-    return as_type<float4>(ReadNamedAttribute(b, pc.Input, pc.Operation == PositionEditOp::Attribute ? AttributeType::Vec3 : AttributeType::Float, v));
+    return as_type<float4>(ReadNamedAttribute(b, pc.Input, pc.Operation == PositionEditOp::Attribute || pc.Operation == PositionEditOp::Place ? AttributeType::Vec3 : AttributeType::Float, v));
 }
 
 inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
@@ -324,17 +324,23 @@ inline float3 AttributePosition(float3 before, float3 value, constant VertexPosi
     return position;
 }
 
+inline float3 PlacePosition(uint v, float3 before, float3 first, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
+    const float3 second = as_type<float3>(ReadNamedAttribute(b, pc.SecondInput, AttributeType::Vec3, v).xyz);
+    return PlaceVertex(before, first, pc.Factor, second, pc.SecondFactor);
+}
+
 // Gathers the moved position of each listed vertex, where `input(v)` is the per-vertex input of vertex v.
 template<typename Input> inline void GatherPosition(uint i, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, Input input) {
     if (i>=pc.Count) return;
     const uint v=BindlessBuffer(uint,b.Buffer,pc.Handles.Slot)[pc.Handles.Offset+i];
     const float3 before=EditPosition(b,pc,v);
-    const bool reads_input=pc.Operation==PositionEditOp::Attribute || pc.Operation==PositionEditOp::Smooth || pc.Operation==PositionEditOp::ShrinkFatten || pc.Operation==PositionEditOp::Randomize;
+    const bool reads_input=pc.Operation==PositionEditOp::Attribute || pc.Operation==PositionEditOp::Place || pc.Operation==PositionEditOp::Smooth || pc.Operation==PositionEditOp::ShrinkFatten || pc.Operation==PositionEditOp::Randomize;
     const float4 value=reads_input ? input(v) : float4(0.f);
     float3 position=before;
     switch (pc.Operation) {
         case PositionEditOp::Transform: position=TransformPosition(before,b,pc); break;
         case PositionEditOp::Attribute: position=AttributePosition(before,value.xyz,pc); break;
+        case PositionEditOp::Place: position=PlacePosition(v,before,value.xyz,b,pc); break;
         case PositionEditOp::SnapSymmetry: position=SnapSymmetryPosition(i,v,before,b,pc); break;
         case PositionEditOp::Smooth: position=SmoothPosition(v,before,value.x,b,pc); break;
         case PositionEditOp::ShrinkFatten: position=ShrinkFattenPosition(v,before,value.x,b,pc); break;

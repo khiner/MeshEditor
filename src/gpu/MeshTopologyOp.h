@@ -71,9 +71,12 @@ enum class BooleanOperation : uint32_t {
 // The boundary handles, the primitive count and the loops of vertex and source corner pairs follow it.
 GPU_CONSTANT uint32_t TopologyPrimitiveHeaderWords = 4u;
 
+// The node outputs a task writes at most.
+GPU_CONSTANT uint32_t MaxTopologyOutputs = 4u;
 GPU_CONSTANT uint32_t TopologyFlagNewLoopsOnly = 1u; // Subdivide: select only the new loops
 GPU_CONSTANT uint32_t TopologyFlagPlaneCuts = 2u; // Subdivide: cut where edges cross the job's plane
 GPU_CONSTANT uint32_t TopologyFlagEvenOffset = 1u; // Inset: keep the inset width across corners
+GPU_CONSTANT uint32_t TopologyFlagPlacedMove = 4u; // A placing operator: the scalars its emission leaves at zero move its displaced vertices, so the faces at them take no tangents
 GPU_CONSTANT uint32_t TopologyFlagTransformCopies = 8u; // Extrude and duplicate: move the copies through the job's transform
 GPU_CONSTANT uint32_t TopologyFlagSelectCopies = 64u; // Edge split: select only the first copy at each split vertex
 GPU_CONSTANT uint32_t TopologyFlagKeepVertices = 128u; // Dissolve edges: leave the endpoints in place even with two edges left
@@ -129,6 +132,10 @@ inline bool TopologyIterates(MeshTopologyOp op) {
 }
 inline bool TopologyDisplaces(MeshTopologyOp op, uint32_t flags) {
     return op == MeshTopologyOp::Boolean || op == MeshTopologyOp::InsetRegion || op == MeshTopologyOp::InsetIndividual || op == MeshTopologyOp::Poke || op == MeshTopologyOp::Solidify || op == MeshTopologyOp::Wireframe || op == MeshTopologyOp::AddPrimitives || op == MeshTopologyOp::Decimate || TopologyIsBevel(op) || (flags & TopologyFlagTransformCopies) != 0u;
+}
+// Operators that place each new vertex at its base plus per-unit directions times their scalars, whose topology the scalars leave unchanged.
+inline bool TopologyPlaces(MeshTopologyOp op) {
+    return op == MeshTopologyOp::InsetRegion || op == MeshTopologyOp::InsetIndividual || op == MeshTopologyOp::Poke || op == MeshTopologyOp::Solidify || op == MeshTopologyOp::Wireframe || TopologyIsBevel(op);
 }
 inline bool TopologyCreatesRecord(MeshTopologyOp op) { return op == MeshTopologyOp::KeepSelectedFaces || op == MeshTopologyOp::Boolean || op == MeshTopologyOp::LevelSet; }
 // The operator whose marks an operator reuses: an extrude for an inset, a duplicate for a solidify, and itself otherwise.

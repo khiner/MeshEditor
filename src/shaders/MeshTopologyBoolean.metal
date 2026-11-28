@@ -97,8 +97,9 @@ kernel void TopologyBooleanScatter(TOPOLOGY_ARGS) {
             const uint source = (arriving & BoolRealOut) ? uint3(polygon[arriving & ~BoolRealOut]).z : InvalidOffset;
             const float3 w = entry == source_vertices.x ? float3(1.f, 0.f, 0.f) : entry == source_vertices.y ? float3(0.f, 1.f, 0.f) :
                 entry == source_vertices.z ? float3(0.f, 0.f, 1.f) : TopoBarycentric(BoolEntryPosition(runs, boolean, entry), corner_a, corner_b, corner_c);
-            ctx.WriteCorner4(job, base + k, output_vertex, uint4(corners.x, corners.y, corners.z, corners.z), w.x + w.y > 0.f ? w.y / (w.x + w.y) : 0.f, w.z, source, false);
+            // A corner of the second operand's face marks it, which the edge attributes compare across each edge.
+            ctx.WriteCorner4(job, base + k, output_vertex, uint4(corners.x, corners.y, corners.z, corners.z), w.x + w.y > 0.f ? w.y / (w.x + w.y) : 0.f, w.z, source, false, uint(ctx.SecondFace(job, face)));
         }
-        TopoEmitFace(ctx, job, fd, base, 3u, face, false);
+        TopoEmitFace(ctx, job, fd, base, 3u, face, false, uint(ctx.SecondFace(job, face)) << 1u);
     }
 }

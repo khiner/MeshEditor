@@ -11,6 +11,7 @@ struct Source;
 struct Join;
 struct Boolean;
 struct StoreNamedAttribute;
+struct Capture;
 struct SetPosition;
 struct TransformElements;
 struct ToSphere;
@@ -63,8 +64,8 @@ struct NodeErrors;
 struct SourceState;
 struct NodeResult;
 struct NodeResults;
-struct NodeExtrusion;
-struct NodeExtrusions;
+struct NodeTopology;
+struct NodeTopologies;
 struct NodeHandle;
 struct NodeHandles;
 struct OperationHandle;
@@ -84,7 +85,7 @@ struct TimeReads;
 struct TexcoordWriters;
 } // namespace graph
 
-using GraphSchema = state::Schema<state::GraphBase, state::GraphCount, graph::CookChanges, graph::GraphChanges, graph::CookPass, graph::PendingSources, graph::CookTime, graph::OccurrenceImages, CookCount, TimeCooks, graph::NodeTheme, graph::Source, graph::Join, graph::Boolean, graph::StoreNamedAttribute, graph::SetPosition, graph::TransformElements, graph::ToSphere, graph::PushPull, graph::Shear, graph::Warp, graph::Bend, graph::VertexSlide, graph::EdgeSlide, graph::Flatten, graph::MarkSharp, graph::Knife, graph::Shade, graph::StoreSelection, graph::Bake, graph::MeshToPoints, graph::InstanceOnPoints, graph::RealizeInstances, graph::ObjectInfo, graph::GraphNode, graph::NodeInputs, graph::GeometryGraph, graph::GraphNodes, graph::GraphActive, graph::NodeBypassed, graph::GraphLayout, graph::ItemNode, graph::SubgraphItems, graph::SubgraphNode, graph::SubgraphInterface, graph::Subgraph, graph::GraphInstances, graph::GraphOwnedMesh, graph::InlineSelection, graph::PublishSelection, graph::NodeError, graph::NodeErrors, graph::SourceState, graph::NodeResult, graph::NodeResults, graph::NodeExtrusion, graph::NodeExtrusions, graph::NodeHandle, graph::NodeHandles, graph::OperationHandle, graph::SelectionEditing, graph::BooleanPlacement, graph::BooleanPlacements, graph::StagedNode, graph::CookPlan, graph::TimeReads, graph::TexcoordWriters, graph::Extrude, graph::Bisect, graph::Minkowski, graph::Project, graph::SubdivisionSurface, graph::LevelSet, graph::SmoothSurface, graph::Op, graph::OpValueBlock, graph::BuiltinSubgraphLiterals, graph::Surface, graph::MaterialGraph, graph::MaterialGraphChanges, graph::MaterialProgram>;
+using GraphSchema = state::Schema<state::GraphBase, state::GraphCount, graph::CookChanges, graph::GraphChanges, graph::CookPass, graph::PendingSources, graph::CookTime, graph::OccurrenceImages, CookCount, TimeCooks, graph::NodeTheme, graph::Source, graph::Join, graph::Boolean, graph::StoreNamedAttribute, graph::Capture, graph::SetPosition, graph::TransformElements, graph::ToSphere, graph::PushPull, graph::Shear, graph::Warp, graph::Bend, graph::VertexSlide, graph::EdgeSlide, graph::Flatten, graph::MarkSharp, graph::Knife, graph::Shade, graph::StoreSelection, graph::Bake, graph::MeshToPoints, graph::InstanceOnPoints, graph::RealizeInstances, graph::ObjectInfo, graph::GraphNode, graph::NodeInputs, graph::GeometryGraph, graph::GraphNodes, graph::GraphActive, graph::NodeBypassed, graph::GraphLayout, graph::ItemNode, graph::SubgraphItems, graph::SubgraphNode, graph::SubgraphInterface, graph::Subgraph, graph::GraphInstances, graph::GraphOwnedMesh, graph::InlineSelection, graph::PublishSelection, graph::NodeError, graph::NodeErrors, graph::SourceState, graph::NodeResult, graph::NodeResults, graph::NodeTopology, graph::NodeTopologies, graph::NodeHandle, graph::NodeHandles, graph::OperationHandle, graph::SelectionEditing, graph::BooleanPlacement, graph::BooleanPlacements, graph::StagedNode, graph::CookPlan, graph::TimeReads, graph::TexcoordWriters, graph::Extrude, graph::Bisect, graph::Minkowski, graph::Project, graph::SubdivisionSurface, graph::LevelSet, graph::SmoothSurface, graph::Op, graph::OpValueBlock, graph::BuiltinSubgraphLiterals, graph::Surface, graph::MaterialGraph, graph::MaterialGraphChanges, graph::MaterialProgram>;
 template<typename T>
     requires GraphSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = GraphSchema::Of<T>();

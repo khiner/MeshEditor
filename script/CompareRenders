@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import filecmp
 from io import BytesIO
 import json
 import os
@@ -187,6 +188,12 @@ def compare_videos(reference: Path, candidate: Path, name: str, sample: int) -> 
     if a != b:
         raise RuntimeError(f"{name}: video geometry differs ({a[0]}x{a[1]}, {a[2]} frames vs {b[0]}x{b[1]}, {b[2]} frames)")
     width, height, frames = a
+    # Equal files hold equal frames and audio, so every frame compares without a decode.
+    if filecmp.cmp(reference, candidate, shallow=False):
+        delta = Delta()
+        delta.pixels = width * height * frames
+        delta.histogram[0] = 3 * delta.pixels
+        return {"kind": "video", "width": width, "height": height, "frames": frames, "sampledFrames": frames, **delta.metrics()}
     indices = list(range(frames)) if sample <= 0 or sample >= frames else sorted(
         {round(index * (frames - 1) / (sample - 1)) for index in range(sample)}
     )

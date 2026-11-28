@@ -113,14 +113,14 @@ std::shared_ptr<const PositionPlan> PlanPositions(const MeshStore &meshes, const
 } // namespace
 
 std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, const PositionOperationTarget &target, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options, const PositionPlan *plan) {
-    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, input, sphere_radius] = options;
+    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, placement, input, sphere_radius] = options;
     uint32_t flags = requested_flags;
     const auto *program = std::get_if<PositionProgram>(&input);
-    if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Attribute)) return {};
+    if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Place)) return {};
     if (bool(warp) != (operation == PositionEditOp::Warp) || bool(bend) != (operation == PositionEditOp::Bend) ||
         bool(randomize) != (operation == PositionEditOp::Randomize) || bool(slide) != (operation == PositionEditOp::VertexSlide) ||
         bool(edge_slide) != (operation == PositionEditOp::EdgeSlide) || bool(symmetry) != (operation == PositionEditOp::SnapSymmetry) ||
-        bool(transform) != (operation == PositionEditOp::Transform) || (operation == PositionEditOp::Attribute && std::holds_alternative<std::monostate>(input)) || ((curve || circle) && operation != PositionEditOp::Copy) || (curve && circle)) return {};
+        bool(transform) != (operation == PositionEditOp::Transform) || bool(placement) != (operation == PositionEditOp::Place) || (operation == PositionEditOp::Attribute && std::holds_alternative<std::monostate>(input)) || ((curve || circle) && operation != PositionEditOp::Copy) || (curve && circle)) return {};
     if (!Finite(center) || !Finite(direction) || !Finite(gradient)) return {};
     if (warp && (!ValidPlane(warp->Orientation, warp->Center, warp->OffsetAngle) || (!warp->AutoRange && (!std::isfinite(warp->Min) || !std::isfinite(warp->Max) || warp->Min == warp->Max)))) return {};
     if (bend && (!ValidPlane(bend->Orientation, bend->Center, bend->OffsetAngle) || !std::isfinite(bend->Radius) || bend->Radius == 0.f)) return {};
@@ -139,7 +139,8 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
     const auto own = !plan && PlansFromMesh(operation, options) ? PlanPositions(meshes, pipelines, target, operation, options) : nullptr;
     if (own) plan = own.get();
     if (warp) flags = (flags & ~PositionEditWarpAutoRange) | (warp->AutoRange ? PositionEditWarpAutoRange : 0u);
-    const bool zero_moves = symmetry || warp || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
+    // A placement's second scalar moves its vertices where its factor is zero.
+    const bool zero_moves = symmetry || warp || (placement && placement->SecondFactor != 0.f) || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
     if (!axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return {};
     const bool planar = operation == PositionEditOp::Planar;
     const bool ordered_chains = curve || circle;
@@ -189,10 +190,10 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
         // Symmetry can also move an unselected partner for each selected vertex.
         const uint32_t vertex_words = edge_slide || symmetry ? 10u : 4u;
         const uint32_t parameter_words = transform ? sizeof(TransformPositionParameters) / sizeof(uint32_t) : warp || bend ? 18u :
-            randomize                                                                                                           ? 3u :
-            slide                                                                                                               ? 8u :
-            edge_slide                                                                                                          ? 1u :
-                                                                                                                                  0u;
+            randomize                                                                                                      ? 3u :
+            slide                                                                                                          ? 8u :
+            edge_slide                                                                                                     ? 1u :
+                                                                                                                             0u;
         const uint64_t table_words = program ? (program->Attributes.size() * sizeof(OpAttributeRef) + program->Images.size() * sizeof(OpImageTexture)) / sizeof(uint32_t) + alignof(OpImageTexture) / sizeof(uint32_t) : 0u;
         chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + parameter_words + table_words);
     }
@@ -210,6 +211,11 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
         .Operation = operation,
     };
     if (const auto *attribute = std::get_if<NamedAttributeRef>(&input)) pc.Input = *attribute;
+    if (placement) {
+        pc.Input = placement->First;
+        pc.SecondInput = placement->Second;
+        pc.SecondFactor = placement->SecondFactor;
+    }
     if (!planar && operation == PositionEditOp::ShrinkFatten) pc.Faces = listed ? SeedElementWorkHandles(chain.Scratch, face_bound, selection->Faces) : ElementWork{.Count = face_bound};
     std::vector<Range> batches;
     const auto world = transformed ? target.World : Transform{};

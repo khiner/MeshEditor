@@ -54,7 +54,7 @@ using UpdatableComponents = TypeList<
     mesh::CycleCornerAttribute, graph::MarkSharp, graph::Knife, graph::Shade,
     graph::ToSphere, graph::PushPull, graph::Shear, graph::Warp, graph::Bend, graph::VertexSlide, graph::EdgeSlide, graph::Flatten,
     graph::TransformElements, graph::Boolean, graph::Minkowski, graph::LevelSet,
-    graph::StoreNamedAttribute, graph::StoreSelection, graph::Bake, graph::SetPosition, graph::InstanceOnPoints, graph::ObjectInfo,
+    graph::StoreNamedAttribute, graph::Capture, graph::StoreSelection, graph::Bake, graph::SetPosition, graph::InstanceOnPoints, graph::ObjectInfo,
     primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 
 template<typename C>

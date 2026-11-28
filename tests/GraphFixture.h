@@ -225,11 +225,12 @@ struct GraphDescription {
         std::variant<uint16_t, std::string_view> Kind;
         std::vector<NodeUpdate> Updates{};
     };
-    // A link from the first output of node `From` into socket `Socket` of node `To`, or into the op input named `Input`.
+    // A link from output `Output` of node `From`, or its first output, into socket `Socket` of node `To`, or into the op input named `Input`.
     struct Link {
         uint32_t From, To;
         uint16_t Socket;
         std::string_view Input{};
+        std::optional<uint16_t> Output{};
     };
     std::variant<PrimitiveParameters, MeshSource> Shape;
     std::vector<Node> Nodes;
@@ -249,7 +250,7 @@ inline BuiltGraph Build(GraphFixture &f, const GraphDescription &graph) {
                                                                                                            f.AddMesh(*primitive);
     BuiltGraph built{mesh, {f.Node(mesh, 0u)}};
     for (const auto &[kind, updates] : graph.Nodes) built.Nodes.push_back(f.Append(mesh, kind, updates));
-    for (const auto [from, to, socket, input] : graph.Links) f.Do(action::nodes::Link{mesh, built.Nodes[from], f.Out(built.Nodes[from]), built.Nodes[to], input.empty() ? socket : f.OpSocket(built.Nodes[to], input)});
+    for (const auto [from, to, socket, input, output] : graph.Links) f.Do(action::nodes::Link{mesh, built.Nodes[from], output.value_or(f.Out(built.Nodes[from])), built.Nodes[to], input.empty() ? socket : f.OpSocket(built.Nodes[to], input)});
     f.Do(action::nodes::SetDisplay{mesh, built.Nodes[graph.Display]});
     return built;
 }

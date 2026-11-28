@@ -111,7 +111,7 @@ inline uint TopoSectorCount(TopoContext ctx, device const MeshTopologyJob &job, 
 
 // The inset displacement at a corner between edges arriving from `a` and leaving to `b`, inside a face with normal `n`.
 inline float3 TopoInsetCorner(float3 a, float3 p, float3 b, float3 n, float thickness, float depth, bool even) {
-    const float3 in_prev = normalize(cross(n, p - a)), in_next = normalize(cross(n, b - p));
+    const float3 in_prev = TopoDirection(cross(n, p - a)), in_next = TopoDirection(cross(n, b - p));
     const float3 sum = in_prev + in_next;
     const float scale = even ? 1.f / max(1.f + dot(in_prev, in_next), 1e-4f) : 0.5f;
     return sum * (thickness * scale) + n * depth;

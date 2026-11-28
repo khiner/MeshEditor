@@ -257,29 +257,36 @@ struct TopoContext {
     TopoOutputRun<uint> DstOpposites(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.OppositesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
     uint2 DstFaceRange(device const MeshTopologyJob &job, uint f) const { return Dst(job).FaceHalfedges(DstFaceDomain(job).Handle(f)) - job.DstCornerOffset; }
     // An output element interpolates four sources bilinearly: lerp(lerp(a, b, s), lerp(d, c, s), t).
-    void WriteVertexMap4(device const MeshTopologyJob &job, uint d, uint4 sources, float s, float t) const { TopoWriteMap(VertexMap(job) + TopoVertexMapWords * d, sources, s, t); }
-    void WriteVertexMap(device const MeshTopologyJob &job, uint d, uint a, uint b, float weight) const { WriteVertexMap4(job, d, uint4(a, b, b, a), weight, 0.f); }
+    // `marks` holds the bits of the node outputs whose sets hold an output vertex, face or corner's edge.
+    void WriteVertexMap4(device const MeshTopologyJob &job, uint d, uint4 sources, float s, float t, uint marks = 0u) const {
+        TopoWriteMap(VertexMap(job) + TopoVertexMapWords * d, sources, s, t);
+        if (job.VertexMarkOffset != InvalidOffset) Scratch()[job.VertexMarkOffset + d] = marks;
+    }
+    void WriteVertexMap(device const MeshTopologyJob &job, uint d, uint a, uint b, float weight, uint marks = 0u) const { WriteVertexMap4(job, d, uint4(a, b, b, a), weight, 0.f, marks); }
     void WriteVertexProvenance(device const MeshTopologyJob &job, uint d, uint first, uint count, uint face) const {
         WriteVertexMap4(job, d, uint4(TopoProvenanceMap, first, count, face), 0.f, 0.f);
     }
     uint CornerEdgeSource(device const MeshTopologyJob &job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 6u]; }
-    bool CornerSelected(device const MeshTopologyJob &job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 7u] != 0u; }
-    void WriteCorner(device const MeshTopologyJob &job, uint d, uint v_out, uint a, uint b, float weight, uint edge_source, bool selected) const {
-        WriteCorner4(job, d, v_out, uint4(a, b, b, a), weight, 0.f, edge_source, selected);
+    bool CornerSelected(device const MeshTopologyJob &job, uint d) const { return (CornerMap(job)[TopoCornerMapWords * d + 7u] & 1u) != 0u; }
+    uint CornerMarks(device const MeshTopologyJob &job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 7u] >> 1u; }
+    void WriteCorner(device const MeshTopologyJob &job, uint d, uint v_out, uint a, uint b, float weight, uint edge_source, bool selected, uint marks = 0u) const {
+        WriteCorner4(job, d, v_out, uint4(a, b, b, a), weight, 0.f, edge_source, selected, marks);
     }
-    void WriteCorner4(device const MeshTopologyJob &job, uint d, uint v_out, uint4 sources, float s, float t, uint edge_source, bool selected) const {
+    void WriteCorner4(device const MeshTopologyJob &job, uint d, uint v_out, uint4 sources, float s, float t, uint edge_source, bool selected, uint marks = 0u) const {
         DstCorners(job)[d] = DstVertexDomain(job).Handle(v_out);
-        if (job.CornerAttributes & MeshAttributeBit_Normal) CornerProvenance(job)[d].x = v_out;
+        if (job.CornerAttributes & (MeshAttributeBit_Normal | MeshAttributeBit_Tangent)) CornerProvenance(job)[d].x = v_out;
         device uint *map = CornerMap(job) + TopoCornerMapWords * d;
         TopoWriteMap(map, sources, s, t);
         map[6] = edge_source;
-        map[7] = selected ? 1u : 0u;
+        map[7] = (selected ? 1u : 0u) | marks << 1u;
     }
     // An output corner blends the provenance pairs from `first`, whose sources are source corners.
     void WriteCornerProvenance(device const MeshTopologyJob &job, uint d, uint v_out, uint first, uint count, uint edge_source, bool selected) const {
         WriteCorner4(job, d, v_out, uint4(TopoProvenanceMap, first, count, 0u), 0.f, 0.f, edge_source, selected);
     }
 };
+// The unit vector along `v`, or zero for a vector without length, as the edge between two vertices at one point and the normal of a face without area are.
+inline float3 TopoDirection(float3 v) { return dot(v, v) > 0.f ? normalize(v) : float3(0.f); }
 // A topology kernel's lane and threadgroup, the bindless set and the push constants, and the context of its tile's job.
 #define TOPOLOGY_ARGS uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]], device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 #define TOPOLOGY_CONTEXT const TopoContext ctx{bindless, pc}; const uint2 tile = ctx.Tile(group_id); device const MeshTopologyJob &job = ctx.Jobs()[tile.x]
@@ -340,9 +347,18 @@ inline float TopoParamAt(TopoContext ctx, NamedAttributeRef attribute, float fal
     return attribute.ValuesSlot == InvalidSlot ? fallback : as_type<float>(ReadNamedAttribute(ctx.B, attribute, AttributeType::Float, handle).x);
 }
 inline float TopoParam0Vertex(TopoContext ctx, device const MeshTopologyJob &job, uint v) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcVertexDomain(job).Handle(v)); }
-inline float TopoParam0Edge(TopoContext ctx, device const MeshTopologyJob &job, uint e) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcEdgeDomain(job).Handle(e)); }
+// A placing operator's linked Param0 value at an element, which scales its directions, or one where Param0 places them.
+inline float TopoUnit0At(TopoContext ctx, device const MeshTopologyJob &job, uint handle) { return TopoParamAt(ctx, job.Param0Attribute, 1.f, handle); }
+inline float TopoUnit0Vertex(TopoContext ctx, device const MeshTopologyJob &job, uint v) { return TopoUnit0At(ctx, job, ctx.SrcVertexDomain(job).Handle(v)); }
+inline float TopoUnit0Edge(TopoContext ctx, device const MeshTopologyJob &job, uint e) { return TopoUnit0At(ctx, job, ctx.SrcEdgeDomain(job).Handle(e)); }
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);
+}
+// Sets each node output of the domain true at the output element where the element's marks hold the output's bit, after the carried value the element took.
+inline void TopoWriteOutputs(TopoContext ctx, device const MeshTopologyJob &job, AttributeDomain domain, uint handle, uint marks) {
+    for (uint i = 0u; i < MaxTopologyOutputs; ++i) {
+        if (((marks >> i) & 1u) && ((job.OutputDomains >> (4u * i)) & 15u) == uint(domain)) WriteNamedAttribute(ctx.B, job.Outputs[i], AttributeType::Bool, handle, uint4(1u, 0u, 0u, 0u));
+    }
 }
 inline void TopoCopyAttributes(TopoContext ctx, device const MeshTopologyJob &job, AttributeDomain domain, uint handle, uint source) {
     const uint2 run = TopoAttributeRun(job, domain);
@@ -575,12 +591,13 @@ inline bool TopoOriginalVertexSelected(TopoContext ctx, device const MeshTopolog
     }
 }
 
-inline void TopoEmitFace(TopoContext ctx, device const MeshTopologyJob &job, uint fd, uint base, uint count, uint source, bool selected) {
+inline void TopoEmitFace(TopoContext ctx, device const MeshTopologyJob &job, uint fd, uint base, uint count, uint source, bool selected, uint marks = 0u) {
     ctx.FaceMap(job)[fd] = source;
+    if (job.FaceMarkOffset != InvalidOffset) ctx.Scratch()[job.FaceMarkOffset + fd] = marks;
     ctx.DstFaceRanges(job)[fd] = packed_uint2(job.DstCornerOffset + base, job.DstCornerOffset + base + count);
     for (uint h = base; h < base + count; ++h) {
         ctx.DstHalfedgeFaces(job)[h] = ctx.DstFaceDomain(job).Handle(fd);
-        if (job.CornerAttributes & MeshAttributeBit_Normal) ctx.CornerProvenance(job)[h].y = fd;
+        if (job.CornerAttributes & (MeshAttributeBit_Normal | MeshAttributeBit_Tangent)) ctx.CornerProvenance(job)[h].y = fd;
     }
     const bool hidden=source<job.SrcFaceCount+job.Src2Counts[2] && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcAddress(job,2u,ctx.SrcFaceDomain(job).Handle(source)));
     ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstAddress(job,2u,ctx.DstFaceDomain(job).Handle(fd)),hidden);

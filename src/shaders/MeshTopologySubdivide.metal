@@ -173,7 +173,7 @@ struct SubdivideEmitter {
                 const uint i = order ? order[k] : k;
                 const bool chord = chord_arrival && chord_arrival[k];
                 const bool edge_selected = chord || (loop.Selected[i] && (Job.Flags & TopologyFlagNewLoopsOnly) == 0u);
-                Ctx.WriteCorner(Job, Base + k, loop.Vertex[i], loop.SourceA[i], loop.SourceB[i], loop.Weight[i], chord ? InvalidOffset : loop.EdgeSource[i], edge_selected);
+                Ctx.WriteCorner(Job, Base + k, loop.Vertex[i], loop.SourceA[i], loop.SourceB[i], loop.Weight[i], chord ? InvalidOffset : loop.EdgeSource[i], edge_selected, uint(chord));
             }
             TopoEmitFace(Ctx, Job, Face, Base, count, Source, selected);
         }
@@ -187,10 +187,11 @@ struct SubdivideEmitter {
                 const uint slot = grid.Node(cell.x, cell.y);
                 const uint vertex_id = slot != InvalidOffset ? loop.Vertex[slot] : grid.Interior(cell.x, cell.y);
                 const uint edge = grid.EdgeSource(cells[(q + Count - 1u) % Count], cell);
-                if (slot != InvalidOffset) Ctx.WriteCorner(Job, Base + q, vertex_id, loop.SourceA[slot], loop.SourceB[slot], loop.Weight[slot], edge, true);
+                // A grid edge without a source edge is a cut across the face.
+                if (slot != InvalidOffset) Ctx.WriteCorner(Job, Base + q, vertex_id, loop.SourceA[slot], loop.SourceB[slot], loop.Weight[slot], edge, true, uint(edge == InvalidOffset));
                 else {
                     const float2 weight = grid.Weights(cell.x, cell.y);
-                    Ctx.WriteCorner4(Job, Base + q, vertex_id, grid.Corners, weight.x, weight.y, edge, true);
+                    Ctx.WriteCorner4(Job, Base + q, vertex_id, grid.Corners, weight.x, weight.y, edge, true, uint(edge == InvalidOffset));
                 }
             }
             TopoEmitFace(Ctx, Job, Face, Base, Count, Source, true);
@@ -627,7 +628,7 @@ inline void TopoConnectWriteCorner(TopoContext ctx, device const MeshTopologyJob
     const uint output = ctx.Counts(job, TopoCountVertices)[v];
     ctx.WriteCorner(job, dst, output, h, h, 0.f, chord ? InvalidOffset : h,
         chord || (ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)) &&
-            (job.Op != MeshTopologyOp::ConnectVertices || (job.Flags & TopologyFlagNewLoopsOnly) == 0u)));
+            (job.Op != MeshTopologyOp::ConnectVertices || (job.Flags & TopologyFlagNewLoopsOnly) == 0u)), uint(chord));
 }
 
 inline uint TopoConnectWriteEar(TopoContext ctx, device const MeshTopologyJob &job, uint f, bool own_loop,

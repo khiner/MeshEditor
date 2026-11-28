@@ -46,26 +46,34 @@ std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeCh
         const auto &record = meshes.Get(input.StoreId);
         const auto tangents = a.CornerTangents.Ref(record.CornerTangents);
         Job job{.Index = i, .Gpu = RecordJob(meshes, input.StoreId)};
-        const auto face_table = a.FaceTriangles.Entries(record.FaceData);
+        const auto face_table = a.FaceTriangles.Entries(record.FaceData), triangle_table = a.Triangles.Entries(record.TriangleData);
+        const auto loops = a.FaceRanges.Buffer.GetSpan<uvec2>();
+        const auto firsts = a.FaceTriangles.Buffer.GetSpan<uint32_t>();
         job.Gpu.ChangedVertices = input.ChangedVertices;
         job.Gpu.Tangents = tangents;
+        // The address runs of the triangles the job rewrites, each run extending the one before it when it continues it.
         std::vector<Range> triangle_ranges;
-        const auto add = [&](uint32_t face) {
-            const auto address = Resolve<MeshElementBlockSize>(face_table, ElementHandle{face}).Value();
-            const auto loop = a.FaceRanges.Get({address, 1u})[0];
+        const auto add = [&](uint32_t face, uint32_t address) {
+            const auto loop = loops[address];
             const uint32_t n = loop.y - loop.x;
             if (n <= 3u && tangents.Slot == InvalidSlot) return;
             if (uint64_t(job.Corners) + n > UINT32_MAX / (2u * PolygonTriangulationWords)) throw std::length_error("Polygon tessellation scratch exceeds its address space.");
             if (tangents.Slot != InvalidSlot) a.CornerTangents.Capture(record.CornerTangents, {loop.x, n});
             job.Faces.emplace_back(face, job.Corners);
-            const uint32_t first = a.FaceTriangles.Get({address, 1u})[0];
-            if (n > 3u) a.Triangles.ForEachAddressRun(record.TriangleData, ElementHandle{first}, n - 2u, [&](Range run) { triangle_ranges.push_back(run); });
+            const uint32_t first = firsts[address];
+            if (n > 3u) a.Triangles.ForEachAddressRun(triangle_table, ElementHandle{first}, n - 2u, [&](Range run) {
+                if (!triangle_ranges.empty() && triangle_ranges.back().Offset + triangle_ranges.back().Count == run.Offset) triangle_ranges.back().Count += run.Count;
+                else triangle_ranges.push_back(run);
+            });
             // Polygons beyond PolygonThreadCorners corners triangulate in scratch.
             if (n > PolygonThreadCorners) job.Corners += n;
             job.TriangleBlocks += (uint64_t(first % MeshElementBlockSize) + n - 2u + MeshElementBlockSize - 1u) / MeshElementBlockSize;
         };
-        if (input.Work) ForEachWorkElement(*input.Work, input.Faces, add);
-        else a.FaceTriangles.ForEach(record.FaceData, [&](ElementHandle face, ElementAddress) { add(face.Value); });
+        if (input.Work) ForEachWorkElement(*input.Work, input.Faces, [&](uint32_t face) { add(face, Resolve<MeshElementBlockSize>(face_table, ElementHandle{face}).Value()); });
+        else {
+            job.Faces.reserve(a.FaceTriangles.Count(record.FaceData));
+            a.FaceTriangles.ForEach(record.FaceData, [&](ElementHandle face, ElementAddress address) { add(face.Value, address.Value()); });
+        }
         if (job.Faces.empty()) continue;
         a.Triangles.Buffer.CaptureWriteRanges(triangle_ranges, sizeof(uvec3));
         job.Gpu.Count = uint32_t(job.Faces.size());
@@ -155,19 +163,16 @@ std::vector<ElementWork> EncodeRecordRefresh(state::Registry &r, mtl::ComputeCha
 }
 
 std::vector<ElementWork> EncodePositionRefresh(state::Registry &r, mtl::ComputeChain &chain, std::span<const PositionRefresh> refreshes) {
+    using Domain = MeshStore::ElementDomain;
     auto &meshes = r.Resources.get<MeshStore>();
     std::vector<ElementWork> results(refreshes.size());
     std::vector<uint32_t> every;
-    std::vector<size_t> every_at;
-    // A record moved over listed vertices refreshes around them, with the neighborhood its closures record in its lane.
-    struct Local {
-        size_t At;
-        uint32_t StoreId;
-        ClosureSeed Vertices{};
-        MeshClosure Neighborhood{};
-        MeshStore::SelectionUpdate Bounds{};
-    };
-    std::vector<Local> locals;
+    std::vector<size_t> every_at, listed_at;
+    // A record moved over listed vertices refreshes around them, with the neighborhood the host marks.
+    std::vector<MeshRetessellation> tessellations;
+    std::vector<LocalNormalWork> normals;
+    std::vector<MeshStore::SelectionUpdate> bounds;
+    const auto count = [](std::span<const uint32_t> words) { return uint32_t(std::ranges::fold_left(words, uint64_t{0}, [](uint64_t sum, uint32_t word) { return sum + std::popcount(word); })); };
     for (size_t i = 0u; i < refreshes.size(); ++i) {
         const auto [id, change] = refreshes[i];
         if (change->Every) {
@@ -175,30 +180,18 @@ std::vector<ElementWork> EncodePositionRefresh(state::Registry &r, mtl::ComputeC
             every_at.push_back(i);
             continue;
         }
-        auto &local = locals.emplace_back(Local{.At = i, .StoreId = id, .Bounds = {.StoreId = id}});
-        chain.Lane(id, [&] {
-            local.Vertices = ListSeed(r, chain, id, Element::Vertex, change->Vertices);
-            const auto incident = EncodeVertexClosure(r, chain, id, local.Vertices);
-            const auto faces = AroundVertices(r, id, Element::Face, incident.Elements[2], local.Vertices);
-            local.Neighborhood = EncodePrimitiveClosure(r, chain, id, faces, {}, local.Vertices);
-        });
-        local.Bounds.Blocks[0] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Vertex, chain.Scratch, local.Vertices.Work);
+        const auto marks = MarkVertexNeighborhood(r, id, change->Vertices);
+        const auto listed = SeedElementWorkWords(chain.Scratch, marks.Listed), vertices = SeedElementWorkWords(chain.Scratch, marks.Vertices), faces = SeedElementWorkWords(chain.Scratch, marks.Faces);
+        auto &update = bounds.emplace_back(MeshStore::SelectionUpdate{.StoreId = id});
+        update.Blocks[0] = meshes.ArenaBlocks(id, Domain::Vertex, chain.Scratch, listed);
+        update.Blocks[2] = meshes.ArenaBlocks(id, Domain::Face, chain.Scratch, faces);
+        tessellations.push_back({.StoreId = id, .Work = &chain.Scratch, .Faces = faces, .ChangedVertices = listed});
+        normals.push_back({id, vertices, count(marks.Vertices), faces, count(marks.Faces)});
+        listed_at.push_back(i);
     }
-    if (!locals.empty()) {
-        chain.Submit();
-        std::vector<MeshRetessellation> tessellations;
-        std::vector<LocalNormalWork> normals;
-        std::vector<MeshStore::SelectionUpdate> bounds;
-        for (auto &local : locals) {
-            auto &neighborhood = local.Neighborhood;
-            neighborhood.Finish(chain);
-            local.Bounds.Blocks[2] = meshes.ArenaBlocks(local.StoreId, MeshStore::ElementDomain::Face, chain.Scratch, neighborhood.Elements[2]);
-            tessellations.push_back({.StoreId = local.StoreId, .Work = &chain.Scratch, .Faces = neighborhood.Elements[2], .ChangedVertices = local.Vertices.Work});
-            normals.push_back({local.StoreId, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
-            bounds.push_back(std::move(local.Bounds));
-        }
+    if (!listed_at.empty()) {
         const auto retessellated = EncodeRetessellation(r, chain, tessellations);
-        for (size_t k = 0u; k < locals.size(); ++k) results[locals[k].At] = retessellated[k];
+        for (size_t k = 0u; k < listed_at.size(); ++k) results[listed_at[k]] = retessellated[k];
         EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
         meshes.UpdateSelection(r, chain, bounds);
     }

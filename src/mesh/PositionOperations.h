@@ -62,6 +62,11 @@ struct PositionProgram {
     std::vector<OpAttributeRef> Attributes;
     std::vector<OpImageTexture> Images;
 };
+// A Place edit's vec3 vertex attributes of each vertex's two directions, and the scalar of the second, where the edit's factor is the scalar of the first.
+struct PositionPlacement {
+    NamedAttributeRef First, Second;
+    float SecondFactor{};
+};
 struct PositionOperationOptions {
     uint32_t Axes{7u}, Flags{};
     vec3 Direction{}, Gradient{}, Center{};
@@ -73,6 +78,7 @@ struct PositionOperationOptions {
     std::optional<PositionCurve> Curve;
     std::optional<PositionCircle> Circle;
     std::optional<PositionTransform> Transform;
+    std::optional<PositionPlacement> Placement;
     // The per-vertex input from a vertex attribute or a program's first output: the vec3 positions of an Attribute edit, or the factor of a smooth, shrink/fatten or randomize, which reads `factor` without one.
     std::variant<std::monostate, NamedAttributeRef, PositionProgram> Input;
     std::optional<float> SphereRadius{}; // The mean distance a sphere blend scales toward, or none for the mean distance of the selected vertices

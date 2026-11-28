@@ -18,6 +18,7 @@
 #include "render/MeshletBuildGpu.h"
 #include "render/ObjectGeometry.h"
 #include "scene/WorldTransform.h"
+#include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
@@ -233,8 +234,9 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r) {
     std::vector<state::Entity> result;
     const auto element = r.get<const EditMode>(state::Document).Value;
     const auto &meshes = r.Resources.get<const MeshStore>();
-    for (const auto e : r.view<const MeshElementSelection>()) {
-        if (!HasMesh(r, e)) continue;
+    // A mesh that no selected object draws keeps the selection it remembers out of the edit.
+    for (const auto e : r.get<const SelectionFlags>(state::Document).Meshes) {
+        if (!r.all_of<MeshElementSelection>(e) || !HasMesh(r, e)) continue;
         const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, e));
         if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(e);
     }

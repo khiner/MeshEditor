@@ -145,12 +145,12 @@ inline uint TopoLineCorners(TopoContext ctx, device const MeshTopologyJob &job, 
     return line.Kept && TopoLineFirst(ctx, job, line, ctx.SrcHalfedgeDomain(job).Index(h)) ? 2u : 0u;
 }
 
-inline void TopoEmitLine(TopoContext ctx, device const MeshTopologyJob &job, uint d, uint from, uint to, uint from_corner, uint to_corner, uint edge_source, bool selected) {
+inline void TopoEmitLine(TopoContext ctx, device const MeshTopologyJob &job, uint d, uint from, uint to, uint from_corner, uint to_corner, uint edge_source, bool selected, uint marks = 0u) {
     ctx.DstHalfedgeFaces(job)[d]=ctx.DstHalfedgeFaces(job)[d+1u]=InvalidOffset;
     const auto opposites=ctx.DstOpposites(job);
     opposites[d]=job.DstCornerOffset+d+1u; opposites[d+1u]=job.DstCornerOffset+d;
-    ctx.WriteCorner(job, d, to, to_corner, to_corner, 0.f, edge_source, selected);
-    ctx.WriteCorner(job, d + 1u, from, from_corner, from_corner, 0.f, edge_source, selected);
+    ctx.WriteCorner(job, d, to, to_corner, to_corner, 0.f, edge_source, selected, marks);
+    ctx.WriteCorner(job, d + 1u, from, from_corner, from_corner, 0.f, edge_source, selected, marks);
 }
 
 // noinline keeps the topology kernels fast to compile.
@@ -167,7 +167,7 @@ __attribute__((noinline)) void TopoScatterLine(TopoContext ctx, device const Mes
         if (own) TopoEmitLine(ctx, job, base, vertex_offsets[from], vertex_offsets[to], pair, h, h, false);
         if (ctx.Span(job, TopoCountWireCorners, entry) > 2u * uint(own))
             TopoEmitLine(ctx, job, base + 2u * uint(own), vertex_offsets[from] + TopoVertexCopies(ctx, job, from),
-                vertex_offsets[to] + TopoVertexCopies(ctx, job, to), pair, h, h, true);
+                vertex_offsets[to] + TopoVertexCopies(ctx, job, to), pair, h, h, true, 1u);
         return;
     }
     if (job.Op == MeshTopologyOp::Subdivide && TopoEdgeCut(ctx, job, h)) {

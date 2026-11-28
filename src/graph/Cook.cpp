@@ -75,6 +75,13 @@ struct CookPass {
     bool DependsOnEarlierCooks{}; // A cook took a path whose result depends on the cooks before it
 };
 void Reset(CookPass &pass, state::Registry &) { pass = {}; }
+// Lists a state a cook of `mesh` kept as one a later pass restores exactly, while this pass cooks that mesh alone.
+void ListExact(state::Registry &r, state::Entity mesh, const ExactState &kept) {
+    if (auto &pass = r.Resources.get<CookPass>(); kept.State != store::Hash128{} && pass.Mesh == mesh && !std::ranges::contains(pass.Exact, kept.State, &ExactState::State)) pass.Exact.push_back(kept);
+}
+// Marks the pass as one whose result depends on the cooks before it, for a cook that replaces or drops the topology a node keeps.
+// The kept topology decides whether the node's next cook restores it, and a replay of the step's actions starts from the one the step's base holds.
+void ReplaceKeptTopology(state::Registry &r) { r.Resources.get<CookPass>().DependsOnEarlierCooks = true; }
 // The timeline frame and frame rate the graphs' cooks hold.
 struct CookTime {
     int Frame{};
@@ -203,9 +210,11 @@ struct Masks {
     StageRound &Topology;
     // Receives the node's outcome when a plan completes after the round or its reads, and is null for a later round.
     std::optional<Outcome> *Planned{};
+    // The node's linked outputs, which its topology tasks write into their hidden attributes.
+    TopologyOutputs Outputs{};
 };
 // The masks with the stages of a later round, whose plans set no outcome.
-Masks Later(const Masks &m, StageRound &later) { return {.In = m.In, .Domain = m.Domain, .Publish = m.Publish, .Drawn = m.Drawn, .Round = m.Round, .Step = m.Step, .Topology = later}; }
+Masks Later(const Masks &m, StageRound &later) { return {.In = m.In, .Domain = m.Domain, .Publish = m.Publish, .Drawn = m.Drawn, .Round = m.Round, .Step = m.Step, .Topology = later, .Outputs = m.Outputs}; }
 
 struct Operand {
     uint32_t Attribute{InvalidOffset};
@@ -762,6 +771,7 @@ void ExecuteStage(state::Registry &r, std::vector<StagedTask> &stage) {
         std::vector<std::pair<DrawnEdits *, const MeshTopologyEdit *>> accumulated;
         std::vector<DrawnRepair> repairs;
         std::vector<const MeshTopologyEdit *> repaired;
+        std::vector<state::Entity> built;
         for (uint32_t i = 0u; i < edits.size(); ++i) {
             const auto &edit = edits[i];
             const auto &staged = stage[first + i];
@@ -775,6 +785,15 @@ void ExecuteStage(state::Registry &r, std::vector<StagedTask> &stage) {
                 accumulated.emplace_back(drawn, &edit);
                 continue;
             }
+            // An edit that retires every finest cluster leaves its record's render records to a new build, as accumulated edits that do, which a kept edit runs once it finished.
+            if (RetiresEveryCluster(r, edit)) {
+                if (staged.Kept) built.push_back(drawn->Entity);
+                else {
+                    drawn->Topology.Edited = true;
+                    drawn->Topology.Triangles.ClusterCount = meshes.Get(edit.StoreId).Level0Count;
+                }
+                continue;
+            }
             if ((meshes.Get(edit.StoreId).RenderTopologies & 1u) != 0u || edit.AddedTriangleCount) renders.emplace_back(drawn->Entity, &edit);
             repairs.push_back({drawn->Entity, edit.StoreId});
             repaired.push_back(&edit);
@@ -786,7 +805,8 @@ void ExecuteStage(state::Registry &r, std::vector<StagedTask> &stage) {
         for (size_t i = 0u; i < repairs.size(); ++i) {
             if (repaired[i]->Repair) repairs[i].Marked = RepairMarks(*repaired[i]) | std::ranges::to<std::vector>();
         }
-        if (!repairs.empty()) RepairDrawnElements(r, chain, repairs); }, extruded);
+        if (!repairs.empty()) RepairDrawnElements(r, chain, repairs);
+        BuildMeshlets(r, chain, built, {}); }, extruded);
     for (size_t i = 0u; i < stage.size(); ++i) {
         if (auto *created = stage[i].Created) *created = results[i].Changed ? Outcome{results[i].GeometryId} : std::unexpected(NodeFault::Empty);
     }
@@ -801,10 +821,12 @@ void PublishInput(state::Registry &r, uint32_t id, const Masks &masks) {
 }
 // Stages the dependent tasks in order, each executing with the same stage of the other meshes' nodes of the step, and returns the input record, which they edit in place.
 // An extrusion task fills `extruded`, and `kept` keeps the state the tasks' stages leave.
+// Each task writes the node's linked outputs, true at the elements it creates in each one's set, so the sets accumulate over the tasks.
 Outcome ExecuteStages(state::Registry &r, std::span<MeshTopologyTask> tasks, const Masks &masks, std::vector<ExtrusionSource> *extruded = nullptr, bool kept = false) {
     if (masks.Publish) {
         for (auto &task : tasks) PublishStoreSelection(r.Resources.get<const MeshStore>(), task);
     }
+    for (auto &task : tasks) task.NodeOutputs = masks.Outputs;
     auto &stages = masks.Topology.Stages;
     if (stages.size() < tasks.size()) stages.resize(tasks.size());
     for (size_t stage = 0u; stage < tasks.size(); ++stage) stages[stage].push_back({tasks[stage], masks.Drawn, extruded, kept});
@@ -957,6 +979,42 @@ template<typename K> Outcome RepositionBy(state::Registry &r, uint32_t id, const
     return Reposition(r, id, masks, op, factor, repeat, options);
 }
 
+// A node output's hidden attribute: a Bool field of the elements of one set the node created, or the field a Capture node holds.
+// Its name holds the producer's occurrence and socket, which plans compiled since keep.
+constexpr std::string_view OutputPrefix = ".out.";
+std::string OutputName(std::span<const state::Entity> path, uint16_t socket) {
+    uint64_t h = store::Mix64(socket);
+    for (const auto entity : path) h = store::Mix64(h ^ state::Integral(entity));
+    return std::format("{}{:016x}", OutputPrefix, h);
+}
+// Whether the output socket holds a hidden attribute: a varying output of a node other than an op.
+bool HiddenOutput(const CookPlan &plan, uint32_t node, uint16_t socket) {
+    const auto kind = plan.Nodes[node].Kind;
+    return kind != KindOf<Op> && socket >= InputCount[kind] && NodeSockets(plan, node)[socket].Varies;
+}
+// Whether a demanded reader links the node's output, which the node writes only then.
+bool Linked(const CookPlan &plan, uint32_t node, uint16_t socket) { return plan.Consumers[plan.SocketFirst[node] + socket] != 0u; }
+// The stored field an input reads from an output of a node other than an inline op: the hidden attribute of the output on record `id`, or the stored-field op's output.
+uint32_t StoredFieldOf(const MeshStore &meshes, const CookPlan &plan, std::span<const SocketValue> values, uint32_t id, uint32_t from, uint16_t socket) {
+    return HiddenOutput(plan, from, socket) ? meshes.FindAttribute(id, OutputName(PathOf(plan, from), socket)) : values[plan.SocketFirst[from] + socket].Attribute;
+}
+// Identifies a set of hidden attributes by their names, and is zero for none.
+store::Hash128 OutputsHash(std::vector<std::string_view> names) {
+    if (names.empty()) return {};
+    std::ranges::sort(names);
+    std::string joined;
+    for (const auto name : names) (joined += name) += '\n';
+    return store::HashBytes(std::as_bytes(std::span{joined}));
+}
+// Identifies the hidden attributes the record holds.
+store::Hash128 RecordOutputs(const MeshStore &meshes, uint32_t id) {
+    std::vector<std::string_view> names;
+    meshes.ForEachNamedAttribute(id, [&](uint32_t, const auto &a) {
+        if (a.NameView().starts_with(OutputPrefix)) names.push_back(a.NameView());
+    });
+    return OutputsHash(std::move(names));
+}
+
 // The hash of a node's selection, which is zero for every element and differs between a linked field and any literal.
 store::Hash128 SelectionKey(const NodeSelection &selection) {
     if (!selection.Field && !selection.Literal) return {};
@@ -979,12 +1037,34 @@ enum class TopologyReuse { None,
                            Restored };
 // The run of a node of a display path's chained part.
 // Drawn holds the edits of the input record a mesh entity draws, or is null for a record without current render records.
-// Reuse is how the node's topology reuses an earlier cook's, and KeepsExtrusion keeps the state an Extrude node's topology leaves.
+// Reuse is how the node's topology reuses an earlier cook's, and KeepsTopology keeps the state an Extrude or placing node's topology leaves.
+// Replaced is the record the path's cook releases when it publishes, which an exact kept state holds.
 struct PathNodeRun {
     DrawnEdits *Drawn;
     TopologyReuse Reuse;
-    bool KeepsExtrusion;
+    bool KeepsTopology;
+    uint32_t Replaced;
 };
+
+// Returns the scalars a placing task places its vertices by, Param0 and an inset's depth Param1, and leaves them at zero in the task.
+// On a record with corner tangents, scalars that move the placed vertices mark the task to leave the faces at them without tangents, as the placement does.
+std::array<float, 2> TakeScalars(MeshTopologyTask &task, bool tangents) {
+    if (!TopologyPlaces(task.Op)) return {};
+    const bool inset = task.Op == MeshTopologyOp::InsetRegion || task.Op == MeshTopologyOp::InsetIndividual;
+    const std::array scalars{task.Param0, inset ? task.Param1 : 0.f};
+    task.Param0 = 0.f;
+    if (inset) task.Param1 = 0.f;
+    if (tangents && (scalars[0] != 0.f || scalars[1] != 0.f)) task.Flags |= TopologyFlagPlacedMove;
+    return scalars;
+}
+// Whether the record carries corner tangents.
+bool HasTangents(const MeshStore &meshes, uint32_t id) { return id != InvalidOffset && (meshes.Get(id).CornerAttributes & MeshAttributeBit_Tangent) != 0u; }
+// The hash of what the task's topology reads other than its selection and its scalars, on a record that carries corner tangents or does not.
+store::Hash128 TopologyKey(MeshTopologyTask task, bool tangents) {
+    TakeScalars(task, tangents);
+    const std::array words{uint32_t(task.Op), task.Flags & ~TopologyFlagSelectAll, task.Steps, std::bit_cast<uint32_t>(task.Param0), std::bit_cast<uint32_t>(task.Param1)};
+    return store::HashBytes(std::as_bytes(std::span{words}));
+}
 
 vec3 NormalizedSum(std::span<const vec3> vectors) {
     vec3 sum{};
@@ -1018,20 +1098,22 @@ void TakeMaterials(MeshStore &meshes, std::span<const uint32_t> materials, uint3
 Outcome RunExtrude(state::Registry &r, std::span<const state::Entity> node, const Extrude &p, uint32_t id, const Masks &m, const NodeSelection &resolved, const LinkedAttributes &linked, std::vector<uint32_t> &temporaries, const std::optional<PathNodeRun> &path_run) {
     const bool retain = path_run.has_value();
     const auto reuse = path_run && !resolved.Field ? path_run->Reuse : TopologyReuse::None;
-    const bool keep = path_run && path_run->KeepsExtrusion && !resolved.Field && m.Drawn;
+    const bool keep = path_run && path_run->KeepsTopology && !resolved.Field && m.Drawn;
+    const auto replaced = path_run ? path_run->Replaced : InvalidOffset;
     const auto domain = FieldDomain(p);
     const auto offset = ElementParameter(r.Resources.get<const MeshStore>(), linked.Of<&Extrude::Offset>(), domain, AttributeType::Vec3);
     const auto scale = ElementParameter(r.Resources.get<const MeshStore>(), linked.Of<&Extrude::OffsetScale>(), domain);
     if (!offset || !scale) return std::unexpected(NodeFault::Attribute);
     const auto key = retain ? SelectionKey(resolved) : store::Hash128{};
+    const auto topology = TopologyKey(*PlanTopology(r, p, id, {}), false);
     if (m.Drawn) m.Drawn->Recorded = true;
-    return PlanAfterRound(m, id, [&r, node, p, id, m, domain, offset = *offset, scale = *scale, key, reuse, temporaries = std::exchange(temporaries, {}), retain, keep] -> Outcome {
+    return PlanAfterRound(m, id, [&r, node, p, id, m, domain, offset = *offset, scale = *scale, key, topology, reuse, temporaries = std::exchange(temporaries, {}), retain, keep, replaced] -> Outcome {
         auto &meshes = r.Resources.get<MeshStore>();
         const auto *prior = retain ? CookedOf<NodeResult>(r, node) : nullptr;
-        const auto *cached = CookedOf<NodeExtrusion>(r, node);
-        const auto *stage = reuse != TopologyReuse::None && prior && cached && prior->StoreId == id && cached->Mode == p.Mode && cached->Selection == key ? cached : nullptr;
+        const auto *cached = CookedOf<NodeTopology>(r, node);
+        const auto *stage = reuse != TopologyReuse::None && prior && cached && prior->StoreId == id && cached->Topology == topology && cached->Selection == key ? cached : nullptr;
         // The extrusion's topology fills the computed extrusion, which the offsets read after it.
-        const auto computed = std::make_shared<NodeExtrusion>(NodeExtrusion{.Selection = key, .Mode = p.Mode});
+        const auto computed = std::make_shared<NodeTopology>(NodeTopology{.Selection = key, .Topology = topology});
         std::vector<std::pair<uint32_t, vec3>> offsets;
         const bool fields = offset != InvalidOffset || scale != InvalidOffset;
         const bool per_element = fields && p.Mode != ExtrudeMode::Region && p.AlongNormals;
@@ -1076,9 +1158,9 @@ Outcome RunExtrude(state::Registry &r, std::span<const state::Entity> node, cons
         // A restored run reads the extrusion the node keeps, which no other node's run replaces.
         const auto edit = [&r, node, p, id, m, scale, offsets = std::move(offsets), computed = !restored || stage == computed.get() ? computed : nullptr, retain] {
             auto &meshes = r.Resources.get<MeshStore>();
-            const auto &extrusion = computed ? *computed : *CookedOf<NodeExtrusion>(r, node);
+            const auto &extrusion = computed ? *computed : *CookedOf<NodeTopology>(r, node);
             GeometrySelection selected;
-            for (const auto &vertex : extrusion.Vertices) selected.Vertices.push_back(vertex.Output);
+            for (const auto &vertex : extrusion.Extruded) selected.Vertices.push_back(vertex.Output);
             SortUnique(selected.Vertices);
             if (!selected.Vertices.empty() && (p.OffsetScale != 0.f || scale != InvalidOffset)) {
                 const PositionOperationTarget target{.StoreId = id, .Selection = std::move(selected)};
@@ -1089,7 +1171,7 @@ Outcome RunExtrude(state::Registry &r, std::span<const state::Entity> node, cons
                     options.Transform = PositionTransform{.Delta = {.P = (p.AlongNormals ? extrusion.RegionNormal : p.Offset) * p.OffsetScale}};
                 } else {
                     attribute = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Vec3, ".cook.extrude-offset").value();
-                    for (const auto &vertex : extrusion.Vertices) {
+                    for (const auto &vertex : extrusion.Extruded) {
                         const auto normal = p.Mode == ExtrudeMode::Region ? extrusion.RegionNormal : vertex.Normal;
                         const vec3 displacement = offsets.empty() ? (p.AlongNormals ? normal : p.Offset) * p.OffsetScale : std::ranges::lower_bound(offsets, vertex.Source, {}, &std::pair<uint32_t, vec3>::first)->second;
                         meshes.SetAttribute<vec3>(attribute, vertex.Output, std::span{&displacement, 1u});
@@ -1109,11 +1191,17 @@ Outcome RunExtrude(state::Registry &r, std::span<const state::Entity> node, cons
             return id;
         }
         computed->RegionNormal = stage->RegionNormal;
+        ReplaceKeptTopology(r);
         auto task = *PlanTopology(r, p, id, InputOf(m));
-        (void)ExecuteStages(r, std::span{&task, 1u}, m, &computed->Vertices, keep);
+        (void)ExecuteStages(r, std::span{&task, 1u}, m, &computed->Extruded, keep);
         m.Topology.Keeps = m.Topology.Keeps || keep;
-        m.Topology.Later.push_back([edit, computed, keep](StageRound &later) {
-            if (keep) computed->State = later.Kept;
+        // The kept state holds the render records the kept stage repaired.
+        m.Topology.Later.push_back([&r, id, edit, computed, keep, mesh_entity = m.Drawn ? m.Drawn->Entity : state::Null, replaced](StageRound &later) {
+            if (keep) {
+                computed->State = later.Kept;
+                computed->Outputs = RecordOutputs(r.Resources.get<const MeshStore>(), id);
+                ListExact(r, mesh_entity, {later.Kept, replaced, true});
+            }
             edit();
         });
         return id;
@@ -1221,6 +1309,59 @@ template<typename K> Outcome RunElement(state::Registry &r, const K &p, uint32_t
     constexpr auto &sockets = ElementSockets<K>;
     const auto field = [&](size_t i) { return i < sockets.size() ? linked.Attributes[sockets[i]] : InvalidOffset; };
     return PlanAfterRound(m, id, [&r, p, id, m, first = field(0u), second = field(1u)] { return ExecuteElement(r, PlanTopology(r, p, id, InputOf(m)), m, FieldDomain(p), first, second); });
+}
+// The kinds whose topology places each new vertex along directions scaled by the node's per-element parameters, which leave that topology unchanged.
+template<typename K> constexpr bool PlacesTopology = std::same_as<K, Inset> || std::same_as<K, Poke> || std::same_as<K, Bevel> || std::same_as<K, Solidify> || std::same_as<K, Wireframe>;
+// Places the placed vertices of the record's last placing emission by the scalars on the round once the stages executed, and releases its placement attributes once the round submits.
+// Scalars at zero edit nothing, which leaves the faces at the placed vertices with the tangents their topology carries.
+void Place(state::Registry &r, const Masks &m, uint32_t id, std::span<const uint32_t> placed, std::array<float, 2> scalars) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto attributes = PlacementAttributes(meshes, id);
+    if (!placed.empty()) {
+        const PositionOperationTarget target{.StoreId = id, .Selection = GeometrySelection{.Vertices = {placed.begin(), placed.end()}}};
+        EditPositions(r, m, target, PositionEditOp::Place, scalars[0], 1u, {.Placement = PositionPlacement{meshes.AttributeRef(attributes[0]), meshes.AttributeRef(attributes[1]), scalars[1]}});
+    }
+    m.Round.Temporaries.append_range(attributes);
+    SubmitPastBudget(r, m.Round);
+}
+// A placing node's run on a display path's chained part.
+// The first node its cook runs, without a linked per-element parameter or selection field, cooks its topology with its scalars at zero, keeps the mesh storage state that leaves where its record has current render records, then places the vertices by its scalars.
+// A run whose cook restored that state places them again, and every other run cooks its topology with its scalars at once and keeps no state.
+template<typename K> Outcome RunPlacing(state::Registry &r, std::span<const state::Entity> node, const K &p, uint32_t id, const Masks &m, const NodeSelection &resolved, const LinkedAttributes &linked, const PathNodeRun &path_run) {
+    const bool restored = path_run.Reuse == TopologyReuse::Restored;
+    const bool keep = path_run.KeepsTopology && !resolved.Field && m.Drawn && std::ranges::all_of(ElementSockets<K>, [&](uint16_t socket) { return linked.Attributes[socket] == InvalidOffset; });
+    if (!restored && !keep) {
+        if (CookedOf<NodeTopology>(r, node)) ReplaceKeptTopology(r);
+        Drop<NodeTopology>(r, node);
+        return RunElement(r, p, id, m, linked);
+    }
+    if (m.Drawn) m.Drawn->Recorded = true;
+    if (restored) {
+        // The restored state holds the record's placement attributes and the node's kept topology its placed vertices.
+        auto task = PlanTopology(r, p, id, {});
+        m.Topology.Later.push_back([&r, node, m, id, scalars = TakeScalars(task, false)](StageRound &) { Place(r, m, id, CookedOf<NodeTopology>(r, node)->Placed, scalars); });
+        return id;
+    }
+    const auto key = SelectionKey(resolved);
+    ReplaceKeptTopology(r);
+    return PlanAfterRound(m, id, [&r, node, p, id, m, key, mesh_entity = m.Drawn->Entity, replaced = path_run.Replaced] -> Outcome {
+        auto task = PlanTopology(r, p, id, InputOf(m));
+        const bool tangents = HasTangents(r.Resources.get<const MeshStore>(), id);
+        const auto topology = TopologyKey(task, tangents);
+        const auto scalars = TakeScalars(task, tangents);
+        task.Places = true;
+        (void)ExecuteStages(r, std::span{&task, 1u}, m, nullptr, true);
+        m.Topology.Keeps = true;
+        // The kept state holds the render records the kept stage repaired.
+        m.Topology.Later.push_back([&r, node, m, id, key, topology, scalars, mesh_entity, replaced](StageRound &later) {
+            const auto &meshes = r.Resources.get<const MeshStore>();
+            NodeTopology kept{.State = later.Kept, .Selection = key, .Topology = topology, .Outputs = RecordOutputs(meshes, id), .Placed = PlacedVertices(meshes, id)};
+            ListExact(r, mesh_entity, {later.Kept, replaced, true});
+            Place(r, m, id, kept.Placed, scalars);
+            Keep(r, node, std::move(kept));
+        });
+        return id;
+    });
 }
 Outcome Run(state::Registry &r, const SmoothVertices &p, uint32_t id, const Masks &m, const LinkedAttributes &linked) {
     return RepositionBy<SmoothVertices>(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), linked, {.Axes = Axes(p.X, p.Y, p.Z)});
@@ -1475,14 +1616,14 @@ Outcome Run(state::Registry &r, const SetPosition &p, uint32_t id, uint32_t attr
 
 std::string_view NameOf(const AttributeName &name) { return {name.data(), strnlen(name.data(), name.size())}; }
 
-Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, const Operand &value, std::vector<uint32_t> &temporaries) {
-    const auto name = NameOf(p.Name);
+// Replaces the record's attribute of the name with the value on the domain, which takes a temporary value's place without a copy.
+Outcome Store(MeshStore &meshes, std::string_view name, AttributeDomain domain, uint32_t id, const Operand &value, std::vector<uint32_t> &temporaries) {
     const auto attribute = value.Attribute;
     if (attribute == InvalidOffset && !value.Constant) return std::unexpected(NodeFault::Attribute);
     if (name.empty()) return std::unexpected(NodeFault::Parameter);
     if (attribute != InvalidOffset && meshes.GetAttribute(attribute).NameView() == name) return id;
     if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
-    if (attribute == InvalidOffset) return meshes.AddAttribute(id, p.Domain, StorageOf(value.Constant->Type), name, value.Constant->Words) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
+    if (attribute == InvalidOffset) return meshes.AddAttribute(id, domain, StorageOf(value.Constant->Type), name, value.Constant->Words) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     const auto temporary = std::ranges::find(temporaries, attribute);
     if (temporary == temporaries.end()) return meshes.CopyAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     temporaries.erase(temporary);
@@ -1581,12 +1722,13 @@ std::optional<GeometryMasks> UploadSelection(state::Registry &r, std::optional<M
 
 constexpr std::string_view TemporaryPrefix = ".cook.";
 std::string TemporaryName(uint32_t node, uint32_t socket) { return std::format("{}{}.{}", TemporaryPrefix, node, socket); }
-void ReleaseTemporaries(MeshStore &meshes, uint32_t id) {
-    std::vector<uint32_t> temporaries;
+// Releases the record's attributes whose names start with the prefix.
+void ReleasePrefixed(MeshStore &meshes, uint32_t id, std::string_view prefix) {
+    std::vector<uint32_t> held;
     meshes.ForEachNamedAttribute(id, [&](uint32_t attribute, const auto &a) {
-        if (a.NameView().starts_with(TemporaryPrefix)) temporaries.push_back(attribute);
+        if (a.NameView().starts_with(prefix)) held.push_back(attribute);
     });
-    for (const auto attribute : temporaries) meshes.ReleaseAttribute(attribute);
+    for (const auto attribute : held) meshes.ReleaseAttribute(attribute);
 }
 
 // Whether the input socket takes a single value of the type.
@@ -1786,7 +1928,7 @@ StoredDomains StoredDomainsOf(const state::Registry &r, const CookPlan &plan, st
     std::unreachable();
 }
 // The domain a consumer's varying input evaluates on, which the consumer decides.
-// A selection evaluates on the domain its node's selection applies to, a stored-field op's input on its input domain, a filter's on UV texels, Store Named Attribute's value on its domain, Bake's value on texels, and every other input on the elements its kind evaluates its varying parameters on.
+// A selection evaluates on the domain its node's selection applies to, a stored-field op's input on its input domain, a filter's on UV texels, Store Named Attribute's and Capture's value on its domain, Bake's value on texels, and every other input on the elements its kind evaluates its varying parameters on.
 // Without socket values, the consumer's own parameters decide.
 ops::Domain InputDomain(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint16_t socket) {
     const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
@@ -1794,6 +1936,7 @@ ops::Domain InputDomain(const state::Registry &r, const CookPlan &plan, std::spa
     if (kind == KindOf<Op>) return IsFilterOp(r, plan, node) ? ops::Domain::Uv : StoredDomainsOf(r, plan, values, node).Input;
     if (KindSockets(kind)[socket].Selection) return ops::DomainOf(AttributeDomainOf(SelectionDomain(r, plan, values, node, socket)));
     if (kind == KindOf<StoreNamedAttribute>) return ops::DomainOf(at.get<const StoreNamedAttribute>(entity).Domain);
+    if (kind == KindOf<Capture>) return ops::DomainOf(at.get<const Capture>(entity).Domain);
     if (kind == KindOf<Bake>) return ops::Domain::Texel;
     auto domain = ops::Domain::Vertex;
     VisitKind(kind, [&]<typename K> { domain = ops::DomainOf(FieldDomain(values.empty() ? at.get<const K>(entity) : Parameters<K>(r, plan, values, node))); });
@@ -2251,8 +2394,9 @@ std::optional<std::vector<OpAttributeRef>> ResolveReads(state::Registry &r, cons
         const auto name = *ReadName(lib, reader);
         const auto slot = slot_of(name, *reader.Output);
         stored[slot] = true;
-        const auto attribute = values[plan.SocketFirst[read.From] + read.Socket].Attribute;
-        if (attribute == InvalidOffset || meshes.GetAttribute(attribute).NameView() != name || meshes.GetAttribute(attribute).Type != ops::StorageOf(*reader.Output)) {
+        // A program reads a hidden attribute by its plan node's temporary name, so programs of plans of one shape stay shared, and the attribute's type alone checks.
+        const auto attribute = StoredFieldOf(meshes, plan, values, id, read.From, read.Socket);
+        if (attribute == InvalidOffset || (!HiddenOutput(plan, read.From, read.Socket) && meshes.GetAttribute(attribute).NameView() != name) || meshes.GetAttribute(attribute).Type != ops::StorageOf(*reader.Output)) {
             faults.emplace_back(read.Node, NodeFault::Attribute);
             evaluates = false;
             continue;
@@ -2313,7 +2457,7 @@ void EvaluateFieldInputs(state::Registry &r, const CookPlan &plan, std::span<con
             const auto from = request.Outputs[output].first;
             const auto &first = plan.Inputs[plan.InputFirst[from]];
             const bool field = InputsOf(plan, from) && first.FromNode != NoNode && !IsInlineOp(r, plan, first.FromNode) && NodeSockets(plan, first.FromNode)[first.FromSocket].Varies;
-            const auto passed = field ? values[plan.SocketFirst[first.FromNode] + first.FromSocket].Attribute : InvalidOffset;
+            const auto passed = field ? StoredFieldOf(meshes, plan, values, id, first.FromNode, first.FromSocket) : InvalidOffset;
             attributes[socket] = passed == InvalidOffset ? InvalidOffset : ConvertedTo(meshes, id, work, passed, program->Domain, false);
         }
     }
@@ -2322,7 +2466,7 @@ void EvaluateFieldInputs(state::Registry &r, const CookPlan &plan, std::span<con
     for (uint16_t socket = 0; socket < (MultiInput[kind] == NoSocket ? InputsOf(plan, node) : InputCount[kind]); ++socket) {
         const auto &link = plan.Inputs[plan.InputFirst[node] + socket];
         if (link.FromNode == NoNode || IsInlineOp(r, plan, link.FromNode) || !NodeSockets(plan, link.FromNode)[link.FromSocket].Varies || !sockets[socket].Varies) continue;
-        const auto attribute = values[plan.SocketFirst[link.FromNode] + link.FromSocket].Attribute;
+        const auto attribute = StoredFieldOf(meshes, plan, values, id, link.FromNode, link.FromSocket);
         if (attribute == InvalidOffset) continue;
         attributes[socket] = ConvertedTo(meshes, id, work, attribute, InputDomain(r, plan, values, node, socket), false);
     }
@@ -2838,9 +2982,14 @@ Outcome RunKind(state::Registry &r, const CookPlan &plan, std::span<const Socket
             const auto &input = plan.Inputs[plan.InputFirst[node] + ParameterSocket<&Extrude::Offset>];
             if (input.FromNode != NoNode || input.Constant) p.AlongNormals = false;
             edited = Stepped(p) ? RunExtrudeSteps(r, p, id, masks, linked) : RunExtrude(r, path, p, id, masks, evaluation.Selection, linked, evaluation.Temporaries, path_run);
+        } else if constexpr (PlacesTopology<K>) {
+            edited = path_run ? RunPlacing(r, path, p, id, masks, evaluation.Selection, linked, *path_run) : RunElement(r, p, id, masks, linked);
         } else if constexpr (std::same_as<K, StoreNamedAttribute>) {
             // The attribute stores the value once the round completed the passes that evaluated it, and a temporary it renames leaves the step's temporaries.
-            edited = PlanAfterRound(masks, id, [&meshes, p, id, value = OperandOf(plan, values, evaluation.Attributes, node, 1u), &temporaries = masks.Step.Temporaries] { return Store(meshes, p, id, value, temporaries); });
+            edited = PlanAfterRound(masks, id, [&meshes, p, id, value = OperandOf(plan, values, evaluation.Attributes, node, 1u), &temporaries = masks.Step.Temporaries] { return Store(meshes, NameOf(p.Name), p.Domain, id, value, temporaries); });
+        } else if constexpr (std::same_as<K, Capture>) {
+            // A Capture writes its output's hidden attribute as Store Named Attribute writes its attribute, while a reader links the output.
+            if (const auto output = FieldOutput(kind); Linked(plan, node, output)) edited = PlanAfterRound(masks, id, [&meshes, p, id, name = OutputName(path, output), value = OperandOf(plan, values, evaluation.Attributes, node, 1u), &temporaries = masks.Step.Temporaries] { return Store(meshes, name, p.Domain, id, value, temporaries); });
         } else if constexpr (std::same_as<K, StoreSelection>) {
             edited = PlanAfterRound(masks, id, [&meshes, p, id, masks] { return Store(meshes, p, id, masks); });
         } else if constexpr (std::same_as<K, LevelSet>) {
@@ -2864,6 +3013,37 @@ Outcome RunKind(state::Registry &r, const CookPlan &plan, std::span<const Socket
     return edited;
 }
 
+// The domain of an operator's output `i`, which holds the elements of one set the operator creates, where `selected` is the domain its selection applies to.
+AttributeDomain OutputDomain(const Extrude &p, uint32_t i, Element) {
+    if (p.Mode == ExtrudeMode::Vertices) return i == 0u ? AttributeDomain::Vertex : AttributeDomain::Edge;
+    return p.Mode == ExtrudeMode::Edges && i == 0u ? AttributeDomain::Edge : AttributeDomain::Face;
+}
+// The kinds whose every output is a set of faces, and those whose output is the edges they cut.
+template<typename K>
+concept CreatesFaces = std::same_as<K, Inset> || std::same_as<K, Solidify> || std::same_as<K, Fill> || std::same_as<K, GridFill> || std::same_as<K, BridgeEdgeLoops> || std::same_as<K, ConvexHull>;
+template<typename K>
+concept CutsEdges = std::same_as<K, Subdivide> || std::same_as<K, Bisect> || std::same_as<K, Knife> || std::same_as<K, ConnectVertices>;
+AttributeDomain OutputDomain(const CreatesFaces auto &, uint32_t, Element) { return AttributeDomain::Face; }
+AttributeDomain OutputDomain(const CutsEdges auto &, uint32_t, Element) { return AttributeDomain::Edge; }
+AttributeDomain OutputDomain(const Bevel &, uint32_t i, Element) { return i < 2u ? AttributeDomain::Face : AttributeDomain::Edge; }
+AttributeDomain OutputDomain(const Boolean &, uint32_t i, Element) { return i == 0u ? AttributeDomain::Edge : AttributeDomain::Face; }
+AttributeDomain OutputDomain(const Poke &, uint32_t, Element) { return AttributeDomain::Vertex; }
+AttributeDomain OutputDomain(const Duplicate &, uint32_t, Element selected) { return AttributeDomainOf(selected); }
+// The node's linked outputs, by output index, for a kind whose operator creates sets of elements.
+TopologyOutputs OutputsOf(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, Element selected) {
+    TopologyOutputs outputs{};
+    const auto kind = plan.Nodes[node].Kind;
+    VisitKind(kind, [&]<typename K> {
+        if constexpr (requires(const K &p) { OutputDomain(p, 0u, selected); }) {
+            const auto p = Parameters<K>(r, plan, values, node);
+            for (uint32_t i = 0u; FieldOutput(kind, i) < SocketCount[kind]; ++i) {
+                if (const auto socket = FieldOutput(kind, i); Linked(plan, node, socket)) outputs[i] = TopologyOutput{OutputName(PathOf(plan, node), socket), OutputDomain(p, i, selected)};
+            }
+        }
+    });
+    return outputs;
+}
+
 // Whether the occurrence in the mesh's plan is the one the document's operation handle refers to.
 bool HandleActive(const state::Registry &r, state::Entity mesh, std::span<const state::Entity> path) {
     const auto *active = r.try_get<const OperationHandle>(state::Document);
@@ -2885,7 +3065,7 @@ void RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> 
             step.Temporaries.append_range(evaluation.Temporaries);
             return std::unexpected(NodeFault::Attribute);
         }
-        const Masks masks{.In = evaluation.In, .Domain = evaluation.Selection.Domain, .Publish = Publishes(r, plan, node), .Drawn = path_run ? path_run->Drawn : nullptr, .Round = round, .Step = step, .Topology = step.First, .Planned = planned};
+        const Masks masks{.In = evaluation.In, .Domain = evaluation.Selection.Domain, .Publish = Publishes(r, plan, node), .Drawn = path_run ? path_run->Drawn : nullptr, .Round = round, .Step = step, .Topology = step.First, .Planned = planned, .Outputs = OutputsOf(r, plan, values, node, evaluation.Selection.Domain)};
         // A kind with a handle keeps one of its input's selection for a handle evaluation and for the occurrence the document's operation handle refers to, unless the occurrence holds one.
         const auto kind = plan.Nodes[node].Kind;
         const auto path = PathOf(plan, node);
@@ -2935,6 +3115,22 @@ std::optional<MeshSource> GeneratedSourceOf(const state::Registry &r, state::Ent
         if constexpr (Generator<K>) source = primitive::CreateMesh(Parameters<K>(r, plan, values, node), Writes(r.try_get<const TexcoordWriters>(mesh), PathOf(plan, node)));
     });
     return source;
+}
+// Writes the generator node's linked outputs on its new record, true on the elements of each one's part.
+void WriteGeneratedOutputs(state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint32_t id) {
+    const auto kind = plan.Nodes[node].Kind;
+    if (kind != KindOf<primitive::Cylinder>) return;
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto parts = primitive::CylinderParts(Parameters<primitive::Cylinder>(r, plan, values, node));
+    for (uint16_t i = 0u; i < parts.size(); ++i) {
+        const auto socket = FieldOutput(kind, i);
+        if (!Linked(plan, node, socket)) continue;
+        const auto [domain, first, count] = parts[i];
+        const auto attribute = meshes.AddAttribute(id, AttributeDomainOf(domain), AttributeType::Bool, OutputName(PathOf(plan, node), socket), {0u}).value();
+        const auto marked = std::make_unique<bool[]>(count);
+        std::fill_n(marked.get(), count, true);
+        meshes.SetAttribute<bool>(attribute, first, std::span<const bool>{marked.get(), count});
+    }
 }
 // Creates the records of the sources in one batch, which the round shades before its work.
 std::vector<uint32_t> CreateUnshaded(state::Registry &r, CookRound &round, std::vector<MeshSource> sources) {
@@ -3182,12 +3378,51 @@ std::optional<std::vector<uint32_t>> ChainImages(const state::Registry &r, const
     return images;
 }
 
+// A hidden attribute the records of a chained display path hold, from the path index of its producer, or zero for a producer before the path, until the path index of its last reader, or the path's end without a reader on the path.
+struct PathOutput {
+    std::string Name;
+    size_t First, Last;
+};
+// The hidden attributes of the linked outputs the path's nodes write or read, where a node reads an output through its inputs and the inputs of the ops before it.
+std::vector<PathOutput> PathOutputs(const CookPlan &plan, std::span<const uint32_t> path) {
+    std::vector<PathOutput> outputs;
+    const auto add = [&](uint32_t node, uint16_t socket, size_t first) -> PathOutput & {
+        auto name = OutputName(PathOf(plan, node), socket);
+        const auto held = std::ranges::find(outputs, name, &PathOutput::Name);
+        return held != outputs.end() ? *held : outputs.emplace_back(std::move(name), first, path.size());
+    };
+    for (size_t i = 0u; i < path.size(); ++i) {
+        for (auto s = InputCount[plan.Nodes[path[i]].Kind]; s < NodeSockets(plan, path[i]).size(); ++s) {
+            if (HiddenOutput(plan, path[i], s) && Linked(plan, path[i], s)) add(path[i], s, i);
+        }
+    }
+    for (size_t i = 0u; i < path.size(); ++i) {
+        const auto readers = Upstream(plan, path[i], [&](uint32_t n) { return plan.Nodes[n].Kind == KindOf<Op>; });
+        for (uint32_t n = 0u; n < plan.Nodes.size(); ++n) {
+            if (!readers[n]) continue;
+            for (const auto &link : NodeLinks(plan, n)) {
+                if (link.FromNode != NoNode && HiddenOutput(plan, link.FromNode, link.FromSocket)) add(link.FromNode, link.FromSocket, 0u).Last = i;
+            }
+        }
+    }
+    return outputs;
+}
+// Identifies the hidden attributes the record holds after path node `i`: those from a producer at or before it whose last reader follows it.
+store::Hash128 OutputsAfter(std::span<const PathOutput> outputs, size_t i) {
+    std::vector<std::string_view> names;
+    for (const auto &[name, first, last] : outputs) {
+        if (first <= i && i < last) names.push_back(name);
+    }
+    return OutputsHash(std::move(names));
+}
+
 // A display path's run from its first node to run, which edits the record in place.
 // The record holds the output of the node before First, which keeps the mesh storage state as its NodeResult where KeepsInput holds and a pending result otherwise.
 // The node before Resume, the first node the cook found changed, keeps the state its result leaves, so the next cook of that change restarts there.
 // Every other node that runs holds a pending result, and the nodes from the first faulted one hold none, so the next cook runs them again.
 // The render records repair once for the nodes before each kept state and once for the rest, with the positions of a restore's change to the record.
 // Start is the record the path starts on, Replaced the record the cook replaces, and Topology the topology revisions of Start.
+// Outputs holds the hidden attributes its records hold, each of which its last reader releases after reading it.
 struct PathRun {
     state::Entity Mesh;
     const CookPlan *Plan;
@@ -3202,6 +3437,7 @@ struct PathRun {
     // The node before First keeps the state the record holds: the record continues an earlier cook's, or the cook found the node at First changed.
     // A new record of the root keeps it only for that change, and its root holds a pending result otherwise.
     bool KeepsInput{true};
+    std::vector<PathOutput> Outputs{};
     std::vector<SocketValue> Values{};
     DrawnEdits Drawn{};
 };
@@ -3209,9 +3445,9 @@ struct PathRun {
 // Holds node `i`'s result, with the kept state `state` or pending without one.
 void HoldResult(state::Registry &r, const PathRun &run, size_t i, store::Hash128 state) {
     const auto &plan = *run.Plan;
-    const NodeResult result{i ? NodePath{std::from_range, PathOf(plan, run.Path[i - 1u])} : NodePath{}, state, run.Record};
+    const NodeResult result{i ? NodePath{std::from_range, PathOf(plan, run.Path[i - 1u])} : NodePath{}, state, run.Record, state != store::Hash128{} ? RecordOutputs(r.Resources.get<const MeshStore>(), run.Record) : store::Hash128{}};
     Keep(r, PathOf(plan, run.Path[i]), result);
-    if (auto &pass = r.Resources.get<CookPass>(); state != store::Hash128{} && pass.Mesh == run.Mesh && !std::ranges::contains(pass.Exact, state, &ExactState::State)) pass.Exact.push_back({state, run.Replaced, run.Rendered});
+    ListExact(r, run.Mesh, {state, run.Replaced, run.Rendered});
 }
 
 // Holds the result of the node before the path's first node to run, and returns the single op values its nodes take.
@@ -3253,7 +3489,7 @@ void TakeOutcome(state::Registry &r, PathRun &run, size_t i, const Outcome &edit
 // Holds the result of the path's node `i` unless the run faulted, and returns whether it keeps the state its result leaves, which KeepPathNodes keeps.
 bool HoldPathNode(state::Registry &r, const PathRun &run, size_t i, bool keeps) {
     if (run.Faulted) {
-        Drop<NodeResult, NodeExtrusion, NodeHandle>(r, PathOf(*run.Plan, run.Path[i]));
+        Drop<NodeResult, NodeTopology, NodeHandle>(r, PathOf(*run.Plan, run.Path[i]));
         return false;
     }
     if (!keeps) HoldResult(r, run, i, {});
@@ -3314,13 +3550,18 @@ void RunPathNode(state::Registry &r, PathRun &run, size_t i, OpCook &cook, CookR
         if (HoldPathNode(r, run, i, keeps)) kept.push_back({&run, i});
         return;
     }
+    // The hidden attributes the node reads last release once the round submits after the step.
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    for (const auto &output : run.Outputs) {
+        if (const auto attribute = output.Last == i ? meshes.FindAttribute(run.Record, output.Name) : InvalidOffset; attribute != InvalidOffset) step.Temporaries.push_back(attribute);
+    }
     run.Drawn.Last = keeps || std::ranges::all_of(std::span{run.Path}.subspan(i + 1u), passes_through);
     run.Drawn.Recorded = false;
     const auto take = [&r, &run, i, keeps, &kept](const Outcome &edited) {
         TakeOutcome(r, run, i, edited);
         if (HoldPathNode(r, run, i, keeps)) kept.push_back({&run, i});
     };
-    RunNode(r, plan, run.Values, node, run.Record, cook, RunMode::Publish, round, step, take, PathNodeRun{run.Rendered ? &run.Drawn : nullptr, i == run.First ? run.Reuse : TopologyReuse::None, i == run.First});
+    RunNode(r, plan, run.Values, node, run.Record, cook, RunMode::Publish, round, step, take, PathNodeRun{run.Rendered ? &run.Drawn : nullptr, i == run.First ? run.Reuse : TopologyReuse::None, i == run.First, run.Replaced});
 }
 
 // Repairs the render records of each rendered run's record for its accumulated edits and refreshes its moves and restore, every record in one repair.
@@ -3435,10 +3676,26 @@ void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t recor
     r.emplace_or_replace<MeshGeometryDirty>(mesh_entity, topology || other_domain ? EditSelectionAfter::Derive : EditSelectionAfter::Keep, ready);
 }
 
+// The topology key of the node's authored parameters on a record that carries corner tangents or does not, for an Extrude without steps or a placing node, or none.
+std::optional<store::Hash128> AuthoredTopologyKey(state::Registry &r, const CookPlan &plan, uint32_t node, bool tangents) {
+    std::optional<store::Hash128> key;
+    VisitKind(plan.Nodes[node].Kind, [&]<typename K> {
+        if constexpr (std::same_as<K, Extrude> || PlacesTopology<K>) {
+            const auto &p = Authored(r, plan.Nodes[node]).get<const K>(plan.Nodes[node].Entity);
+            if constexpr (std::same_as<K, Extrude>) {
+                if (Stepped(p)) return;
+            }
+            key = TopologyKey(*std::optional<MeshTopologyTask>{PlanTopology(r, p, InvalidOffset, {})}, tangents);
+        }
+    });
+    return key;
+}
+
 // The held nodes are the root and each following node that holds a result on the result of the node before it.
-// The cook restarts after the last held node whose output the record holds, whose state is kept, or, for a held Extrude's topology, whose extrusion state is kept, and from a new record of the root otherwise.
+// The cook restarts after the last held node whose output the record holds, whose state is kept, or, for a held Extrude or placing node's topology, whose topology state is kept, and from a new record of the root otherwise.
 // The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise.
 // A copied graph's nodes keep the results their originals hold, and the components they were created with leave them unchanged.
+// A record or a kept state continues only where it holds the hidden attributes the plan reads after its node, and the cook restarts before an output's producer otherwise.
 // The cook's start: the path run from the held nodes, or none when the record holds the result or the root has no mesh.
 // A root's materialization and a restore of the record join `round`, which the caller submits, and a restore of the whole mesh storage submits `round` before it.
 std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, const std::vector<bool> &changed, CookRound &round) {
@@ -3446,6 +3703,8 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
     const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
     const auto prior = live && meshes.TryGet(live->StoreId) ? live->StoreId : InvalidOffset;
     const auto entity_at = [&](size_t i) { return PathOf(plan, path[i]); };
+    auto outputs = PathOutputs(plan, path);
+    const auto after = [&](size_t i) { return OutputsAfter(outputs, i); };
     const auto invalid = Downstream(plan, changed.empty() ? std::vector<bool>(plan.Nodes.size()) : changed);
     size_t held = 0u;
     while (held < path.size() && !invalid[path[held]]) {
@@ -3463,9 +3722,26 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
     bool rendered = drawn;
     MeshStore::Change restored{};
     // Whether the record holds the output of the last of `count` held nodes.
-    const auto holds = [&](size_t count) { return prior != InvalidOffset && count && std::ranges::equal(live->Tip, entity_at(count - 1u)); };
+    const auto holds = [&](size_t count) { return prior != InvalidOffset && count && std::ranges::equal(live->Tip, entity_at(count - 1u)) && RecordOutputs(meshes, prior) == after(count - 1u); };
     auto reuse_topology = TopologyReuse::None;
     bool kept = false, keeps_input = true, restored_store = false;
+    // Restores a kept state of the record: the whole mesh storage after the round's other work when the state is exact, and the record alone otherwise.
+    const auto restore = [&](store::Hash128 state, bool refreshes) {
+        const auto &states = r.Resources.get<const CookPass>().Exact;
+        const auto exact = std::ranges::find(states, state, &ExactState::State);
+        if (exact != states.end()) SubmitRound(r, round);
+        WaitForRender(r);
+        if (exact != states.end() && meshes.RestoreKeptState(state)) {
+            // The cook continues as the cook that kept the state did.
+            replaced = exact->Replaced;
+            rendered = exact->Rendered;
+            restored = ReconcileRestoredStore(r, mesh_entity);
+            return restored_store = true;
+        }
+        const auto change = meshes.RestoreRecord(state, prior, round.Readers, refreshes);
+        if (change) restored = JoinRestore(r, round, *change, mesh_entity);
+        return change.has_value();
+    };
     if (holds(held)) {
         if (held == path.size()) return std::nullopt;
         reuse_topology = TopologyReuse::Input;
@@ -3474,44 +3750,23 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
         // A restored record keeps the materials it holds, which an assignment after the kept state set.
         const auto materials = prior != InvalidOffset ? MaterialsOf(meshes, prior) : std::vector<uint32_t>{};
         store::Hash128 topology_state{};
-        if (const auto *result = held ? CookedOf<NodeResult>(r, entity_at(held - 1u)) : nullptr; result && held < path.size() && plan.Nodes[path[held]].Kind == KindOf<Extrude> && result->StoreId == prior) {
+        if (const auto *result = held ? CookedOf<NodeResult>(r, entity_at(held - 1u)) : nullptr; result && held < path.size() && result->StoreId == prior) {
             const auto node = path[held];
             const auto entity = entity_at(held);
             const auto *cached = CookedOf<NodeResult>(r, entity);
-            const auto *topology = CookedOf<NodeExtrusion>(r, entity);
-            const auto &extrude = Authored(r, plan.Nodes[node]).get<const Extrude>(plan.Nodes[node].Entity);
+            const auto *topology = CookedOf<NodeTopology>(r, entity);
             const bool plain = std::ranges::all_of(NodeLinks(plan, node).subspan(1u), [](const auto &input) { return input.FromNode == NoNode && !input.Constant; });
-            // A plain node's selection is its literal, which reads no socket values.
+            // A plain node's parameters and selection are its authored values and literal, which read no socket values.
             if (plain && cached && std::ranges::equal(cached->Input, entity_at(held - 1u)) && cached->StoreId == prior && topology &&
-                topology->Mode == extrude.Mode && !Stepped(extrude) && topology->Selection == SelectionKey(ResolveSelection(r, plan, {}, {}, node))) topology_state = topology->State;
+                AuthoredTopologyKey(r, plan, node, HasTangents(meshes, prior)) == topology->Topology && topology->Selection == SelectionKey(ResolveSelection(r, plan, {}, {}, node)) && topology->Outputs == after(held)) topology_state = topology->State;
         }
-        if (topology_state != store::Hash128{}) {
-            WaitForRender(r);
-            if (const auto change = meshes.RestoreRecord(topology_state, prior, round.Readers, RefreshesRestore(r, prior, mesh_entity))) {
-                restored = JoinRestore(r, round, *change, mesh_entity);
-                restored_record = true;
-                reuse_topology = TopologyReuse::Restored;
-            }
+        if (topology_state != store::Hash128{} && restore(topology_state, RefreshesRestore(r, prior, mesh_entity))) {
+            restored_record = true;
+            reuse_topology = TopologyReuse::Restored;
         }
         while (!restored_record && held && !holds(held)) {
-            if (const auto *result = CookedOf<NodeResult>(r, entity_at(held - 1u)); result && result->StoreId == prior && result->State != store::Hash128{}) {
-                // The whole mesh storage restores after the round's other work.
-                const auto &states = r.Resources.get<const CookPass>().Exact;
-                const auto exact = std::ranges::find(states, result->State, &ExactState::State);
-                if (exact != states.end()) SubmitRound(r, round);
-                WaitForRender(r);
-                if (exact != states.end() && meshes.RestoreKeptState(result->State)) {
-                    // The cook continues as the cook that kept the state did.
-                    replaced = exact->Replaced;
-                    rendered = exact->Rendered;
-                    restored = ReconcileRestoredStore(r, mesh_entity);
-                    restored_record = restored_store = true;
-                } else if (const auto change = meshes.RestoreRecord(result->State, prior, round.Readers, false)) {
-                    // The record takes the state's own tessellation and render records.
-                    restored = JoinRestore(r, round, *change, mesh_entity);
-                    restored_record = true;
-                }
-            }
+            // A restored record takes the state's own tessellation and render records.
+            if (const auto *result = CookedOf<NodeResult>(r, entity_at(held - 1u)); result && result->StoreId == prior && result->State != store::Hash128{} && result->Outputs == after(held - 1u)) restored_record = restore(result->State, false);
             if (!restored_record) --held;
         }
         if (restored_record) {
@@ -3531,7 +3786,7 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
                                                                     std::optional{InvalidOffset};
             if (!materialized) {
                 Keep(r, entity_at(0u), NodeError{NodeFault::NoMesh});
-                for (const auto node : path.subspan(resume)) Drop<NodeResult, NodeExtrusion, NodeHandle>(r, PathOf(plan, node));
+                for (const auto node : path.subspan(resume)) Drop<NodeResult, NodeTopology, NodeHandle>(r, PathOf(plan, node));
                 return std::nullopt;
             }
             record = *materialized;
@@ -3542,23 +3797,27 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
             keeps_input = resume == held && held < path.size() && invalid[path[held]];
         }
     }
-    // A node whose last run read another input has no topology of this input to reuse.
+    // A node whose last run read another input has no topology of this input to reuse, nor a kept topology that holds other node outputs.
     if (reuse_topology == TopologyReuse::Input && held && held < path.size()) {
         const auto *result = CookedOf<NodeResult>(r, entity_at(held));
-        if (result && !std::ranges::equal(result->Input, entity_at(held - 1u))) reuse_topology = TopologyReuse::None;
+        const auto *topology = CookedOf<NodeTopology>(r, entity_at(held));
+        if ((result && !std::ranges::equal(result->Input, entity_at(held - 1u))) || (topology && topology->Outputs != after(held))) reuse_topology = TopologyReuse::None;
     }
     // Only a restore of the whole mesh storage to a state the step kept makes the cook independent of the storage and records the cooks before it left.
     if (!restored_store) r.Resources.get<CookPass>().DependsOnEarlierCooks = true;
-    return PathRun{.Mesh = mesh_entity, .Plan = &plan, .Path = {path.begin(), path.end()}, .First = held, .Resume = resume, .Record = record, .Start = record, .Replaced = replaced, .Topology = record == InvalidOffset ? std::array<uint32_t, 4>{} : TopologyRevisions(meshes, record), .Rendered = rendered, .DrewRender = drawn, .Reuse = reuse_topology, .Kept = kept, .KeepsInput = keeps_input, .Drawn = {.Entity = mesh_entity, .Restored = std::move(restored)}};
+    return PathRun{.Mesh = mesh_entity, .Plan = &plan, .Path = {path.begin(), path.end()}, .First = held, .Resume = resume, .Record = record, .Start = record, .Replaced = replaced, .Topology = record == InvalidOffset ? std::array<uint32_t, 4>{} : TopologyRevisions(meshes, record), .Rendered = rendered, .DrewRender = drawn, .Reuse = reuse_topology, .Kept = kept, .KeepsInput = keeps_input, .Outputs = std::move(outputs), .Drawn = {.Entity = mesh_entity, .Restored = std::move(restored)}};
 }
 
 // Releases the record the cook replaced and publishes the cooked record.
+// The drawn record holds no hidden attribute.
+// A record restored to a node's kept topology holds the topology that node's stage changed, as a cook that runs that stage does.
 void FinishChain(state::Registry &r, const PathRun &run) {
     auto &meshes = r.Resources.get<MeshStore>();
+    ReleasePrefixed(meshes, run.Record, OutputPrefix);
     if (run.Replaced != InvalidOffset && run.Replaced != run.Start && meshes.TryGet(run.Replaced)) ReleaseReplaced(r, run.Replaced);
     OwnMesh(r, run.Mesh, InvalidOffset);
     PublishInstances(r, run.Mesh, state::Null, {});
-    PublishCooked(r, run.Mesh, run.Record, run.Faulted ? NodePath{} : NodePath{std::from_range, PathOf(*run.Plan, run.Path.back())}, run.Rendered, run.Record != run.Start || TopologyRevisions(meshes, run.Record) != run.Topology);
+    PublishCooked(r, run.Mesh, run.Record, run.Faulted ? NodePath{} : NodePath{std::from_range, PathOf(*run.Plan, run.Path.back())}, run.Rendered, run.Reuse == TopologyReuse::Restored || run.Record != run.Start || TopologyRevisions(meshes, run.Record) != run.Topology);
 }
 
 // A started chained cook of one mesh.
@@ -3618,6 +3877,7 @@ void CookChains(state::Registry &r, CookRound &round, std::span<ChainCook> cooks
     for (size_t i = 0u; i < created.size(); ++i) {
         auto &run = *generated[i];
         run.Record = run.Start = created[i];
+        WriteGeneratedOutputs(r, *run.Plan, {}, run.Path.front(), created[i]);
         CarryMaterials(meshes, run.Replaced, created[i]);
         run.Topology = TopologyRevisions(meshes, created[i]);
     }
@@ -3778,6 +4038,7 @@ struct BooleanNode {
     SocketValue In;
     BooleanOperation Operation;
     uint32_t Current; // The result of the operands applied so far
+    TopologyOutputs Outputs; // The node's linked outputs, which each operand's combination writes
     std::vector<Operand> Operands{};
     bool Linked{};
     std::optional<NodeFault> Fault{};
@@ -3810,6 +4071,7 @@ void RunBooleans(state::Registry &r, CookRound &round, std::vector<BooleanNode> 
             }
             const Mesh first_mesh{meshes, boolean.Current}, second_mesh{meshes, second};
             if (auto task = BooleanTask(first_mesh, second_mesh, boolean.Operation, rotation, vec3(to_first[3]))) {
+                task->NodeOutputs = boolean.Outputs;
                 tasks.push_back(std::move(*task));
                 tasked.push_back(&boolean);
             } else if (first_mesh.FaceCount() && second_mesh.FaceCount() && !first_mesh.HasClosedSurface() && !second_mesh.HasClosedSurface()) {
@@ -3904,7 +4166,7 @@ void RunLevelSets(state::Registry &r, CookRound &round, std::vector<LevelSetNode
         cook->Created.push_back(grids[i]);
         RunNode(r, *cook->Plan, cook->Values, node, grids[i], cook->Ops, cook->Mode == RunMode::Publish ? RunMode::Publish : RunMode::Transient, round, step, [&r, cook, node, grid = grids[i]](const Outcome &marched) {
             if (!marched || *marched == grid) return Fail(r, *cook, node, marched ? NodeFault::Empty : marched.error());
-            ReleaseTemporaries(r.Resources.get<MeshStore>(), *marched);
+            ReleasePrefixed(r.Resources.get<MeshStore>(), *marched, TemporaryPrefix);
             cook->Values[cook->Plan->SocketFirst[node] + InputCount[KindOf<LevelSet>]].Record = cook->Created.emplace_back(*marched);
         });
         SubmitPastBudget(r, round);
@@ -3950,6 +4212,7 @@ void RunGenerated(state::Registry &r, CookRound &round, std::vector<GeneratedNod
     for (size_t i = 0u; i < created.size(); ++i) {
         auto &[cook, node, _] = generated[i];
         cook->Values[cook->Plan->SocketFirst[node] + InputCount[cook->Plan->Nodes[node].Kind]].Record = cook->Created.emplace_back(created[i]);
+        WriteGeneratedOutputs(r, *cook->Plan, cook->Values, node, created[i]);
     }
     generated.clear();
 }
@@ -4073,7 +4336,7 @@ void RunGraphNode(state::Registry &r, GraphCook &cook, uint32_t node, CookRound 
     // A Boolean takes its operands, whose clones copy on the round, and combines them with the step's other Boolean nodes.
     if (kind == KindOf<Boolean>) {
         auto p = Parameters<Boolean>(r, plan, values, node);
-        BooleanNode boolean{.Cook = &cook, .Node = node, .In = in, .Operation = p.Operation, .Current = input};
+        BooleanNode boolean{.Cook = &cook, .Node = node, .In = in, .Operation = p.Operation, .Current = input, .Outputs = OutputsOf(r, plan, values, node, Element::Face)};
         BooleanPlacement placement;
         for (auto slot = MultiInput[kind]; slot < InputsOf(plan, node); slot = NextMultiSlot(kind, slot)) {
             const auto second = Take(r, cook, round, node, slot);
@@ -4161,6 +4424,8 @@ std::vector<uint32_t> FinishGraphs(state::Registry &r, std::span<GraphCook> cook
             owns[i] = !transforms[i].empty() && published->Prototype == state::Null && published->MeshEntity == state::Null;
             if (owns[i]) Disown(cook, published->Instance);
             if (result == InvalidOffset) result = CreateShadedMesh(r, {});
+            // The drawn record holds no hidden attribute.
+            ReleasePrefixed(meshes, result, OutputPrefix);
         }
         Disown(cook, result);
         released.append_range(cook.Created);
@@ -4259,8 +4524,8 @@ void TakeRoot(state::Registry &r, PathRun &run, uint32_t record) {
     if (record == InvalidOffset) {
         record = CreateShadedMesh(r, {});
         // The root keeps its fault and no result of an earlier input.
-        Drop<NodeResult, NodeExtrusion, NodeHandle>(r, PathOf(*run.Plan, run.Path.front()));
-        for (const auto node : std::span{run.Path}.subspan(1u)) Drop<NodeError, NodeResult, NodeExtrusion, NodeHandle>(r, PathOf(*run.Plan, node));
+        Drop<NodeResult, NodeTopology, NodeHandle>(r, PathOf(*run.Plan, run.Path.front()));
+        for (const auto node : std::span{run.Path}.subspan(1u)) Drop<NodeError, NodeResult, NodeTopology, NodeHandle>(r, PathOf(*run.Plan, node));
         run.First = run.Path.size();
         run.Faulted = true;
     }
@@ -4345,7 +4610,7 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
         if (!publish) continue;
         const auto occurrence = PathOf(plan, node);
         if (!plan.Demanded[node]) Drop<NodeError, BooleanPlacement>(r, occurrence);
-        if (!chained[node]) Drop<NodeResult, NodeExtrusion, NodeHandle>(r, occurrence);
+        if (!chained[node]) Drop<NodeResult, NodeTopology, NodeHandle>(r, occurrence);
         if (chained[node] && node != chain.front()) Drop<BooleanPlacement>(r, occurrence);
     }
     // A cook that reads other meshes runs after the batch cooked the meshes before it.
@@ -4374,6 +4639,12 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
         if (graph) {
             graph->ResultNode = rooted ? chain.front() : NoNode;
             Demand(*graph, demanded);
+            // The path's nodes read hidden outputs of the nodes the graph cook runs, which write them for the readers the plan demands.
+            for (uint32_t n = 0u; n < plan.Nodes.size(); ++n) {
+                for (uint16_t socket = 0u; socket < plan.SocketFirst[n + 1u] - plan.SocketFirst[n]; ++socket) {
+                    if (HiddenOutput(plan, n, socket)) graph->Consumers[plan.SocketFirst[n] + socket] = plan.Consumers[plan.SocketFirst[n] + socket];
+                }
+            }
         }
         batch->Cooks.push_back({std::move(ops), std::move(*started), std::move(graph), rooted, {path.begin(), path.begin() + *root + 1}, std::move(images)});
         return InvalidOffset;
@@ -4467,7 +4738,7 @@ struct CookChanges {
     state::DirtySet States; // A component that refers to kept mesh storage states changed since the history last recorded the states.
 };
 // The components that refer to kept mesh storage states.
-using StateHolders = TypeList<SourceState, NodeResult, NodeExtrusion, NodeResults, NodeExtrusions>;
+using StateHolders = TypeList<SourceState, NodeResult, NodeTopology, NodeResults, NodeTopologies>;
 
 uint32_t SelectionInput(state::Registry &r, state::Entity mesh_entity, std::span<const state::Entity> path, state::Entity node, uint16_t slot) {
     const auto input = ResolveSocket(r, {path.begin(), path.end()}, InputOf(r, node, slot), true);
@@ -4906,7 +5177,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
             const auto path = PathOf(plan, n);
             // A handle follows the node's input and selection, so a cook that restarts at the node keeps one only for a change of its own parameters.
             if (upstream || (!node.InBuiltinSubgraph && (changes.HandleInputs.contains(node.Entity) || changes.Graph.contains(node.Entity)))) Drop<NodeHandle>(r, path);
-            if (!plan.Demanded[n]) Drop<NodeResult, NodeExtrusion>(r, path);
+            if (!plan.Demanded[n]) Drop<NodeResult, NodeTopology>(r, path);
         }
         if (demanded) cooked.push_back(owner);
         if (!own.empty()) changed.emplace(owner, std::move(own));

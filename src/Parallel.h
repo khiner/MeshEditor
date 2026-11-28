@@ -3,7 +3,7 @@
 #include <dispatch/dispatch.h>
 
 // Run body(i) concurrently for i in [0, count).
-// Each invocation must access only state assigned to its index.
+// Each invocation must access only state assigned to its index, or state it shares with the others through atomic operations.
 void ParallelFor(uint32_t count, auto &&body) {
     if (count == 0) return;
     if (count == 1) {

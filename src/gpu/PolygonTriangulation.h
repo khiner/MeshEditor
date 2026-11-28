@@ -456,38 +456,47 @@ inline float ProjectPolygon(uint32_t n, Position position, Values values) {
 // A corner is straight when it is not real, lies within epsilon of the line through its neighbors, turns by less than a right angle and its next edge is longer than epsilon.
 // A sliver is a triangle whose every corner lies within epsilon of the line through the other two.
 // A polygon of real corners takes the zigzag fan of its corners.
+// A corner at the point of its next corner turns as that corner does, so a polygon keeps its fan while corners that will separate share a point.
+// A polygon with fewer than three edges of any length has no area and takes the same fan.
 // A polygon of real and straight corners takes the zigzag fan of its corners that are real both ways, whose previous corner also lies more than epsilon left of their next edge's line.
 // Every other corner lies on the edge between the two such corners around it, and that edge's corners fan from the opposite corner of its zigzag triangle.
 // When a second or third edge of that triangle holds corners, they fan from the corner of the first fan beside them.
 // So the triangles use every corner, and they tile the polygon when each turns counterclockwise.
 // The zigzag starts where its first and last triangles hold the fewest such edges, since their fans join nearby corners.
-// It emits nothing when fewer than three corners are real both ways or a triangle is clockwise or a sliver.
+// It emits nothing when fewer than three corners are real both ways, a triangle is clockwise or a sliver, or corners share a point and a corner is straight.
 // The caller owns as many words of `links` as the polygon has corners.
 template<typename Links, typename Values, typename Emit>
 inline bool TriangulateConvexPolygon(uint32_t n, Links links, Values values, float epsilon, Emit emit) {
     const auto point = [&](uint32_t i) { return PolygonPoint{values[2u * i], values[2u * i + 1u]}; };
     const auto next = [&](uint32_t i) { return i + 1u < n ? i + 1u : 0u; };
     const auto prev = [&](uint32_t i) { return i ? i - 1u : n - 1u; };
+    const auto edge_from = [&](uint32_t i) { return point(next(i)) - point(i); };
+    const auto has_length = [](PolygonPoint edge) { return edge.x != 0.f || edge.y != 0.f; };
+    uint32_t edge_count = 0u;
+    PolygonPoint final_edge{0.f, 0.f};
+    for (uint32_t i = 0u; i < n; ++i) {
+        const PolygonPoint edge = edge_from(i);
+        if (!has_length(edge)) continue;
+        ++edge_count;
+        final_edge = edge;
+    }
     // Calls `visit(i, real, straight, turn, edge)` with each corner in order until it returns false, and returns whether it never did.
-    // The turn is the determinant of the corner's previous and next edges.
+    // The corner's previous and next edges are the nearest edges with length before and after it, and the turn is their determinant.
     const auto corners = [&](auto visit) {
-        const PolygonPoint first_edge = point(0u) - point(n - 1u);
-        PolygonPoint last_edge = first_edge;
+        PolygonPoint last_edge = final_edge;
         for (uint32_t i = 0u; i < n; ++i) {
-            const PolygonPoint edge = i + 1u < n ? point(i + 1u) - point(i) : first_edge, chord = last_edge + edge;
+            const PolygonPoint own_edge = edge_from(i);
+            PolygonPoint edge = own_edge;
+            for (uint32_t j = next(i); !has_length(edge); j = next(j)) edge = edge_from(j);
+            const PolygonPoint chord = last_edge + edge;
             const float turn = PolygonDet(last_edge, edge);
             const bool real = turn > epsilon * PolygonSqrt(PolygonDot(last_edge, last_edge));
             const bool straight = !real && turn >= -epsilon * PolygonSqrt(PolygonDot(chord, chord)) && PolygonDot(last_edge, edge) > 0.f && PolygonDot(edge, edge) > epsilon * epsilon;
             if (!visit(i, real, straight, turn, edge)) return false;
-            last_edge = edge;
+            if (has_length(own_edge)) last_edge = own_edge;
         }
         return true;
     };
-    uint32_t real_count = 0u;
-    if (!corners([&](uint32_t, bool real, bool straight, float, PolygonPoint) {
-            real_count += real ? 1u : 0u;
-            return real || straight;
-        })) return false;
     // Calls `visit(i, j, k)` with the zigzag fan of `count` corners.
     const auto zigzag = [](uint32_t count, auto visit) {
         uint32_t low = 0u, high = count - 1u;
@@ -500,11 +509,19 @@ inline bool TriangulateConvexPolygon(uint32_t n, Links links, Values values, flo
             right = !right;
         }
     };
-    if (real_count == n) {
+    const auto fan = [&] {
         uint32_t t = 0u;
         zigzag(n, [&](uint32_t i, uint32_t j, uint32_t k) { emit(uvec3{i, j, k}, t++); });
         return true;
-    }
+    };
+    if (edge_count < 3u) return fan();
+    uint32_t real_count = 0u;
+    if (!corners([&](uint32_t, bool real, bool straight, float, PolygonPoint) {
+            real_count += real ? 1u : 0u;
+            return real || straight;
+        })) return false;
+    if (real_count == n) return fan();
+    if (edge_count < n) return false;
     real_count = 0u;
     corners([&](uint32_t i, bool real, bool, float turn, PolygonPoint edge) {
         if (real && turn > epsilon * PolygonSqrt(PolygonDot(edge, edge))) links[real_count++] = i;
@@ -568,7 +585,7 @@ inline void ClipPolygon(uint32_t n, Links links, Values values, float epsilon, E
     TriangulateLoops(n, n, 1u, links, values, loops, epsilon, emit, lanes);
 }
 
-// Triangulates a polygon of `n` corners as manifold::Triangulate does, on its projection, except for a convex polygon with a corner within epsilon of straight.
+// Triangulates a polygon of `n` corners as manifold::Triangulate does, on its projection, except for a convex polygon with a corner within epsilon of straight or at the point of the next corner.
 // The caller owns PolygonTriangulationWords * n words of `links` and as many floats of `values`, in host memory, thread memory, or GPU scratch.
 // Each triangle is emitted counterclockwise in the loop's winding with its index.
 template<typename Position, typename Links, typename Values, typename Emit>
@@ -614,13 +631,13 @@ template<typename Polygon>
 inline void TriangulatePolygons(bool active, uint index, uint lane, uint count, Polygon polygon) {
     uint n = 0u;
     const bool deferred = active && polygon(index, [&](uint corners, auto position, device uint *links, device float *values, auto emit) {
-        n = corners;
-        if (corners > PolygonThreadCorners) return !TriangulateConvexPolygon(corners, links, values, ProjectPolygon(corners, position, values), emit);
-        uint local_links[PolygonTriangulationWords * PolygonThreadCorners];
-        float local_values[PolygonTriangulationWords * PolygonThreadCorners];
-        TriangulatePolygon(corners, position, local_links, local_values, emit);
-        return false;
-    });
+                              n = corners;
+                              if (corners > PolygonThreadCorners) return !TriangulateConvexPolygon(corners, links, values, ProjectPolygon(corners, position, values), emit);
+                              uint local_links[PolygonTriangulationWords * PolygonThreadCorners];
+                              float local_values[PolygonTriangulationWords * PolygonThreadCorners];
+                              TriangulatePolygon(corners, position, local_links, local_values, emit);
+                              return false;
+                          });
     const auto clip = [&](uint k, auto lanes) {
         polygon(k, [&](uint corners, auto position, device uint *links, device float *values, auto emit) {
             ClipPolygon(corners, links, values, ProjectPolygon(corners, position, values), emit, lanes);

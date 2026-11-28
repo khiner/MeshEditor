@@ -225,6 +225,16 @@ PrimitiveListReferences ParsePrimitiveListReferences(const MeshTopologyTask &tas
     return result;
 }
 
+constexpr std::array<std::string_view, 3> PlacementAttributeNames{".placement.first", ".placement.second", ".placement.mark"};
+// The domains of the node outputs the task writes, in four bits each.
+uint32_t OutputDomainsOf(const MeshTopologyTask &task) {
+    uint32_t domains = NoTopologyOutputs;
+    for (uint32_t i = 0u; i < task.NodeOutputs.size(); ++i) {
+        if (const auto &output = task.NodeOutputs[i]) domains = (domains & ~(NoTopologyOutput << 4u * i)) | uint32_t(output->Domain) << 4u * i;
+    }
+    return domains;
+}
+
 MeshTopologyJob TopologyJob(const MeshStore &meshes, const MeshTopologyTask &task, const MeshClosure &source, Range list, uint32_t collapse_count, SlotOffset collapse_vertices) {
     const auto &src = meshes.Get(task.SourceId);
     return {
@@ -265,6 +275,7 @@ MeshTopologyJob TopologyJob(const MeshStore &meshes, const MeshTopologyTask &tas
         .MorphTargetCount = src.MorphBlocksReady ? src.MorphTargetCount : 0u,
         .CollapseCount = collapse_count,
         .CollapseVertices = collapse_vertices,
+        .OutputDomains = OutputDomainsOf(task),
     };
 }
 
@@ -530,7 +541,7 @@ struct MeshTopologyEdit::Closures {
 };
 
 MeshTopologyEdit::MeshTopologyEdit(mtl::ComputeChain &chain, const MeshTopologyTask &task)
-    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op}, SelectionOutput{task.SelectionOutput}, StoreSelectionSource{task.StoreSelectionSource} {}
+    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op}, SelectionOutput{task.SelectionOutput}, StoreSelectionSource{task.StoreSelectionSource}, NodeOutputs{task.NodeOutputs}, Places{task.Places} {}
 MeshTopologyEdit::MeshTopologyEdit(MeshTopologyEdit &&) noexcept = default;
 MeshTopologyEdit::~MeshTopologyEdit() = default;
 
@@ -852,7 +863,10 @@ void MeshTopologyEdit::ReadCounts() {
     job.DstHalfedgeCount = counts.Halfedges;
     job.DstFaceCount = counts.Faces;
     Output->Finish(Chain);
-    if ((Op == MeshTopologyOp::InsetRegion || Op == MeshTopologyOp::SplitNonplanarFaces || Op == MeshTopologyOp::SplitConcaveFaces) && Output->NewCounts == std::array{0u, 0u}) {
+    if ((Op == MeshTopologyOp::InsetRegion || Op == MeshTopologyOp::SplitNonplanarFaces || Op == MeshTopologyOp::SplitConcaveFaces || TopologyIsBevel(Op)) && Output->NewCounts == std::array{0u, 0u}) {
+        // An edit without new elements leaves its record as it is, so its job takes no tile of the emission its group records for the other edits.
+        for (const auto domain : {SrcVertices, SrcHalfedges, SrcFaces}) std::erase_if(plan.Jobs->Jobs.Tiles[domain], [&](uvec2 tile) { return tile.x == plan.Job; });
+        job.DstVertexCount = job.DstHalfedgeCount = job.DstFaceCount = 0u;
         Output.reset();
         return;
     }
@@ -880,6 +894,16 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
         auto next = joined.begin();
         for (auto &task : tasks) {
             if (task.Op == MeshTopologyOp::Boolean) task.SourceId = *next++;
+        }
+    }
+    // A placing emission writes fresh placement attributes, so the vertices it leaves keep no earlier emission's values.
+    for (const auto &task : tasks) {
+        if (!task.Places) continue;
+        auto &meshes = r.Resources.get<MeshStore>();
+        const auto held = PlacementAttributes(meshes, task.SourceId);
+        for (uint32_t i = 0u; i < held.size(); ++i) {
+            if (held[i] != InvalidOffset) meshes.ReleaseAttribute(held[i]);
+            meshes.AddAttribute(task.SourceId, AttributeDomain::Vertex, i < 2u ? AttributeType::Vec3 : AttributeType::Bool, PlacementAttributeNames[i]);
         }
     }
     std::vector<MeshTopologyEdit> edits;
@@ -1014,6 +1038,18 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     return edits;
 }
 
+std::array<uint32_t, 3> PlacementAttributes(const MeshStore &meshes, uint32_t id) {
+    return {meshes.FindAttribute(id, PlacementAttributeNames[0]), meshes.FindAttribute(id, PlacementAttributeNames[1]), meshes.FindAttribute(id, PlacementAttributeNames[2])};
+}
+std::vector<uint32_t> PlacedVertices(const MeshStore &meshes, uint32_t id) {
+    const auto marks = meshes.AttributeView<bool>(PlacementAttributes(meshes, id)[2]);
+    std::vector<uint32_t> placed;
+    for (const auto v : Mesh{meshes, id}.vertices()) {
+        if (marks[*v]) placed.push_back(*v);
+    }
+    return placed;
+}
+
 std::vector<ExtrusionSource> MeshTopologyEdit::ExtrusionSources(state::Registry &r) const {
     std::vector<ExtrusionSource> sources;
     if (!Output) return sources;
@@ -1103,6 +1139,19 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
             job.DstFaceBits = MaskBinding(output->Faces);
         }
         UploadTopologyAttributes(meshes, edit->SourceId, edit->StoreId, plan.SourceAttributes, chain.Scratch, job);
+        // The output gains each node output's attribute where it lacks it, false at every element until the job marks it, and else the job marks the values it carries.
+        for (uint32_t o = 0u; o < edit->NodeOutputs.size(); ++o) {
+            const auto &output = edit->NodeOutputs[o];
+            if (!output) continue;
+            const auto held = meshes.FindAttribute(edit->StoreId, output->Name);
+            job.Outputs[o] = meshes.AttributeRef(held != InvalidOffset ? held : meshes.AddAttribute(edit->StoreId, output->Domain, AttributeType::Bool, output->Name, {0u}).value());
+        }
+        if (edit->Places) {
+            const auto placement = PlacementAttributes(meshes, edit->StoreId);
+            job.PlacementFirst = meshes.AttributeRef(placement[0]);
+            job.PlacementSecond = meshes.AttributeRef(placement[1]);
+            job.PlacementMark = meshes.AttributeRef(placement[2]);
+        }
         CaptureTopologyEmitWrites(r, edit->StoreId, job, edit->AddedTriangleCount, vertex_blocks, face_blocks, edit->SelectionOutput);
         meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Vertex, vertex_blocks);
         meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Face, face_blocks);
@@ -1295,18 +1344,19 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, 
     constexpr uint32_t JobTableWords{11u * JobWords(sizeof(MeshClosureJob)) + 5u * JobWords(sizeof(TopologyIdentityJob)) + JobWords(sizeof(ConnectivityEditJob)) + 4u * JobWords(sizeof(ElementRepairJob)) + 2u * JobWords(sizeof(MeshletBoundsJob))};
     // A task's scratch words, bounded before any GPU result: its fixed tables, its job tables, its job's layout at its output bounds with corner normals, its closures per source element, its publish per output element, and a Boolean's intersection work over the triangles of both sources with its job tables.
     const auto words = tasks | std::views::transform([&](const MeshTopologyTask &task) {
-        const Mesh first{meshes, task.SourceId};
-        const bool boolean = task.Op == MeshTopologyOp::Boolean;
-        const uint64_t vertices = uint64_t(first.VertexCount()) + (boolean ? Mesh{meshes, task.SecondSourceId}.VertexCount() : 0u);
-        const uint64_t triangles = boolean ? uint64_t(meshes.Get(task.SourceId).TriangleCount) + meshes.Get(task.SecondSourceId).TriangleCount : 0u;
-        const auto clamped = [](uint64_t count) { return uint32_t(std::min<uint64_t>(count, UINT32_MAX)); };
-        const MeshStore::TopologyCounts source = boolean ? MeshStore::TopologyCounts{clamped(vertices), clamped(3u * triangles), clamped(triangles)} : MeshStore::TopologyCounts{first.VertexCount(), first.HalfEdgeCount(), first.FaceCount()};
-        MeshTopologyJob job{.Op = task.Op, .Flags = task.Flags, .Steps = task.Steps, .Param0 = task.Param0, .CornerAttributes = MeshAttributeBit_Normal};
-        const auto bounds = TopologyOutputBounds(task, source);
-        const uint64_t layout = LayoutTopologyScratch(job, source, bounds, 0u);
-        const uint64_t elements = uint64_t(source.Vertices) + source.Halfedges + source.Faces, emitted = uint64_t(bounds.Vertices) + bounds.Halfedges + bounds.Faces;
-        return clamped((3u << 10) + JobTableWords + layout + 16u * elements + 4u * emitted + (boolean ? 2u * vertices + 67u * triangles + BooleanTableWords : 0u));
-    }) | std::ranges::to<std::vector>();
+                           const Mesh first{meshes, task.SourceId};
+                           const bool boolean = task.Op == MeshTopologyOp::Boolean;
+                           const uint64_t vertices = uint64_t(first.VertexCount()) + (boolean ? Mesh{meshes, task.SecondSourceId}.VertexCount() : 0u);
+                           const uint64_t triangles = boolean ? uint64_t(meshes.Get(task.SourceId).TriangleCount) + meshes.Get(task.SecondSourceId).TriangleCount : 0u;
+                           const auto clamped = [](uint64_t count) { return uint32_t(std::min<uint64_t>(count, UINT32_MAX)); };
+                           const MeshStore::TopologyCounts source = boolean ? MeshStore::TopologyCounts{clamped(vertices), clamped(3u * triangles), clamped(triangles)} : MeshStore::TopologyCounts{first.VertexCount(), first.HalfEdgeCount(), first.FaceCount()};
+                           MeshTopologyJob job{.Op = task.Op, .Flags = task.Flags, .Steps = task.Steps, .Param0 = task.Param0, .CornerAttributes = MeshAttributeBit_Normal, .OutputDomains = OutputDomainsOf(task)};
+                           const auto bounds = TopologyOutputBounds(task, source);
+                           const uint64_t layout = LayoutTopologyScratch(job, source, bounds, 0u);
+                           const uint64_t elements = uint64_t(source.Vertices) + source.Halfedges + source.Faces, emitted = uint64_t(bounds.Vertices) + bounds.Halfedges + bounds.Faces;
+                           return clamped((3u << 10) + JobTableWords + layout + 16u * elements + 4u * emitted + (boolean ? 2u * vertices + 67u * triangles + BooleanTableWords : 0u));
+                       }) |
+        std::ranges::to<std::vector>();
     // The tasks run in chunks whose scratch stays within the budget, in order.
     const auto split = ChunkByScratch(uint32_t(tasks.size()), ScratchWordBudget, [&](uint32_t i) { return words[i]; });
     std::vector<GeometryTopologyResult> results;

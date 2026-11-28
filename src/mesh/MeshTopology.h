@@ -6,6 +6,14 @@
 #include <functional>
 #include <optional>
 
+// A node output a topology task writes: the name of its Bool attribute on the task's output record, which gains it where it lacks it, and the attribute's domain.
+struct TopologyOutput {
+    std::string Name;
+    AttributeDomain Domain;
+};
+// A task's node outputs by output index, each true at the output elements of the output's set, or none for an output it does not write.
+using TopologyOutputs = std::array<std::optional<TopologyOutput>, MaxTopologyOutputs>;
+
 struct MeshTopologyTask {
     uint32_t SourceId;
     MeshTopologyOp Op;
@@ -54,6 +62,9 @@ struct MeshTopologyTask {
     std::optional<GeometryMasks> SelectionOutput{};
     // A domain whose store selection masks rewrite the other two domains' store masks across the edited blocks, or None.
     Element StoreSelectionSource{Element::None};
+    TopologyOutputs NodeOutputs{};
+    // A placing operator's emission leaves every vertex at its base and writes the placement attributes in place of moving the displaced vertices.
+    bool Places{};
 };
 
 struct ExtrusionSource {
@@ -68,6 +79,10 @@ constexpr uint32_t LabelRounds{16};
 struct MeshStore;
 struct MeshTopologyPushConstants;
 MeshTopologyPushConstants TopologyPushConstants(const MeshStore &);
+// The vertex attributes a placing emission wrote on the record: each vertex's two per-unit directions, and whether the operator displaces it.
+std::array<uint32_t, 3> PlacementAttributes(const MeshStore &, uint32_t id);
+// The vertices the record's last placing emission displaced, ascending.
+std::vector<uint32_t> PlacedVertices(const MeshStore &, uint32_t id);
 // Points the task's emitted selection at the store's masks of its record, so its emitted elements leave selected the way the editor's operators leave them.
 void PublishStoreSelection(const MeshStore &, MeshTopologyTask &);
 

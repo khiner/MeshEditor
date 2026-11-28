@@ -7,6 +7,9 @@
 #include "gpu/NamedAttributeRef.h"
 
 GPU_CONSTANT uint32_t TopologyCountQuantities = 5u;
+// A job holds each node output it writes in four bits of its OutputDomains, which hold NoTopologyOutput for an output it does not write.
+GPU_CONSTANT uint32_t NoTopologyOutput = 15u;
+GPU_CONSTANT uint32_t NoTopologyOutputs = 0xffffu;
 
 // The output fields are filled after the count scan, once the host has allocated the output at its exact counts.
 // Arena offsets index the arenas the push constants identify by slot.
@@ -92,7 +95,7 @@ struct MeshTopologyJob {
     // Per halfedge: two source corners, interpolation weight bits, inherited source halfedge, and selection flag.
     uint32_t CornerMapOffset DEFAULT();
     uint32_t FaceMapOffset DEFAULT(); // Per output face: source face or InvalidOffset
-    uint32_t CornerProvenanceOffset DEFAULT(); // Custom normals only: compact output vertex and face per corner
+    uint32_t CornerProvenanceOffset DEFAULT(); // Custom normals or tangents only: compact output vertex and face per corner
     // Iterating operators: per source face, its label, its region's boundary halfedge count and lowest boundary halfedge, and its walked loop length.
     // Then per source vertex, its edge count and its dissolved edge count.
     uint32_t LabelOffset DEFAULT();
@@ -110,7 +113,13 @@ struct MeshTopologyJob {
     // Collapse: selected keys/order, radix histograms, and tiled segmented sums.
     uint32_t CollapseOffset DEFAULT();
     // Per output vertex: two inward vectors, or one displacement and a zero, that the gather adds to its position.
+    // A placing operator's vectors are per-unit directions of its scalars, unless a per-element parameter scales them.
     uint32_t VertexInwardOffset DEFAULT();
+    // A placing operator's vertex attributes, which take each output vertex's two directions and whether it is displaced, with every vertex left at its base, or none.
+    NamedAttributeRef PlacementFirst DEFAULT(), PlacementSecond DEFAULT(), PlacementMark DEFAULT();
+    // Per output vertex whether a placing operator moves it by a scalar that is not zero, for a job with corner tangents, or InvalidOffset.
+    // The corner gather leaves the faces at those vertices without tangents, which the renderer then derives from their shape.
+    uint32_t PlacedOffset DEFAULT(InvalidOffset);
     // Retained neighborhood corners whose authored normals need rebasing after their derived frames change.
     ElementWork RetainedNormalCorners DEFAULT();
     uint32_t RetainedNormalCornerCount DEFAULT();
@@ -123,4 +132,11 @@ struct MeshTopologyJob {
     // AttributeEnds contains the end of each AttributeDomain's run, which starts at the previous domain's end.
     SlotOffset Attributes DEFAULT();
     GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
+    // The output's Bool attributes of the node outputs the job writes, by output index, true at each output element of the output's set.
+    // OutputDomains holds each output's AttributeDomain in four bits, or NoTopologyOutput for none.
+    GpuArray<NamedAttributeRef, MaxTopologyOutputs> Outputs DEFAULT();
+    uint32_t OutputDomains DEFAULT(NoTopologyOutputs);
+    // Per output vertex and per output face, the bits of the outputs whose sets hold it, or InvalidOffset for a job without outputs.
+    uint32_t VertexMarkOffset DEFAULT(InvalidOffset);
+    uint32_t FaceMarkOffset DEFAULT(InvalidOffset);
 };

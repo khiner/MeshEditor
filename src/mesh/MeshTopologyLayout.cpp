@@ -152,13 +152,13 @@ uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts s
     job.VertexMapOffset = take(std::max(6ull * bounds.Vertices, bounds.Faces ? 2ull * PolygonTriangulationWords * bounds.Halfedges : 0ull));
     job.CornerMapOffset = take(8ull * bounds.Halfedges);
     job.FaceMapOffset = take(bounds.Faces);
-    job.CornerProvenanceOffset = take(job.CornerAttributes & MeshAttributeBit_Normal ? 2ull * bounds.Halfedges : 0u);
+    job.CornerProvenanceOffset = take(job.CornerAttributes & (MeshAttributeBit_Normal | MeshAttributeBit_Tangent) ? 2ull * bounds.Halfedges : 0u);
     job.LabelOffset = take(TopologyIterates(op) ? 4 * F + 2 * V : 0u);
     // Triangulation keeps ear links, projected corners and ear costs per source halfedge, so polygon valence has no shader limit.
-    job.HalfedgeAuxOffset = take(op == MeshTopologyOp::ExtrudeRegion ? 2ull * H : op == MeshTopologyOp::Wireframe                                                                                        ? 2ull * H :
-                                     op == MeshTopologyOp::Triangulate || op == MeshTopologyOp::SplitConcaveFaces                                                                                        ? 2ull * PolygonTriangulationWords * H :
-                                     op == MeshTopologyOp::EdgeSplit || (TopologyMapsWireEdges(op) && op != MeshTopologyOp::Subdivide) || (job.Flags & (TopologyFlagEdgeLists | TopologyFlagScreenCuts)) ? H :
-                                                                                                                                                                                                           0u);
+    job.HalfedgeAuxOffset = take(op == MeshTopologyOp::ExtrudeRegion ? 2ull * H : op == MeshTopologyOp::Wireframe                                                                                                                            ? 2ull * H :
+                                     op == MeshTopologyOp::Triangulate || op == MeshTopologyOp::SplitConcaveFaces                                                                                                                            ? 2ull * PolygonTriangulationWords * H :
+                                     op == MeshTopologyOp::EdgeSplit || op == MeshTopologyOp::BevelEdges || (TopologyMapsWireEdges(op) && op != MeshTopologyOp::Subdivide) || (job.Flags & (TopologyFlagEdgeLists | TopologyFlagScreenCuts)) ? H :
+                                                                                                                                                                                                                                               0u);
     job.WireEdgeMapOffset = op == MeshTopologyOp::Subdivide || op == MeshTopologyOp::ExtrudeRegion ? take(H) : job.HalfedgeAuxOffset;
     const uint64_t split_width = op == MeshTopologyOp::Subdivide ?
         uint64_t(Cuts(job.Flags, job.Param0)) + 1u :
@@ -181,5 +181,9 @@ uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts s
     }
     job.CollapseOffset = take(collapse_words);
     job.VertexInwardOffset = take(TopologyDisplaces(op, job.Flags) ? 6ull * bounds.Vertices : 0u);
+    job.PlacedOffset = (job.CornerAttributes & MeshAttributeBit_Tangent) && TopologyPlaces(op) ? take(bounds.Vertices) : InvalidOffset;
+    const bool outputs = job.OutputDomains != NoTopologyOutputs;
+    job.VertexMarkOffset = outputs ? take(bounds.Vertices) : InvalidOffset;
+    job.FaceMarkOffset = outputs ? take(bounds.Faces) : InvalidOffset;
     return uint32_t(cursor - base);
 }

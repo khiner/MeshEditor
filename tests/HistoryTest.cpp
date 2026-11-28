@@ -82,6 +82,13 @@ enum class WalkStep {
     EnterPage,
     StageParameter,
     ExtrudeDrag,
+    LinkOutput,
+    AddCapture,
+    InsetDrag,
+    PokeDrag,
+    BevelDrag,
+    SolidifyDrag,
+    WireframeDrag,
     ViewportOperator,
     EditSelection,
     MakeLinks,
@@ -93,7 +100,7 @@ constexpr std::array<std::string_view, size_t(WalkStep::Count)> WalkStepNames{
     "add primitive", "add empty", "add light", "add viewport", "remove viewport", "change view", "select object", "extend active", "parent to active", "move active", "delete", "duplicate", "look through camera", "set visible", "instantiate", "make instance unique", "load rig", "set frame",
     "add material", "read texcoords", "assign reference", "delete items", "collapse items", "expand items", "expose port", "instance port value",
     "add node", "link", "unlink", "insert node", "delete nodes", "duplicate nodes", "collapse nodes", "expand nodes", "make unique", "expose socket", "port value", "set display", "set bypass", "edit parameter", "set op input", "change op", "material page", "move nodes", "freeze graph", "enter page",
-    "stage parameter", "extrude drag", "viewport operator", "edit selection", "make links", "add search", "linking add"
+    "stage parameter", "extrude drag", "link output", "add capture", "inset drag", "poke drag", "bevel drag", "solidify drag", "wireframe drag", "viewport operator", "edit selection", "make links", "add search", "linking add"
 };
 
 // The rules a walk reaches at least once, each counted at a step that exercises it.
@@ -316,6 +323,31 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
         const auto object = pick(drawn);
         if (object == state::Null || !attempt(action::selection::Select{object})) return state::Null;
         return r.get<const ObjectGeometry>(object).Entity;
+    };
+    // One of the nodes that is no subgraph node and has a result, or null.
+    const auto result_node = [&](std::vector<state::Entity> nodes) {
+        std::erase_if(nodes, [&](state::Entity node) { return r.all_of<graph::SubgraphNode>(node) || !graph::ResultSocket(r, node); });
+        return pick(nodes);
+    };
+    // Runs the gesture `steps` stage over every element of the selected mesh in Edit mode on `element`, which it commits or cancels, and returns to Object mode.
+    const auto edit_gesture = [&](Element element, auto &&steps) {
+        f.EnterEdit(element);
+        f.Do(action::selection::SelectAll{});
+        const bool done = gesture(below(3) != 0u, steps);
+        f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+        return done;
+    };
+    // Drags an operator over every element of a new primitive in Edit mode, staging the operator `at` makes of each step's scalar.
+    // A primitive is an input the operators place well-formed geometry on, which the meshes the walk degenerates are not.
+    // The step starts in Object mode, so Edit mode holds the new primitive alone where a history step returned to a state in Edit mode.
+    const auto placing_drag = [&](Element element, auto &&at) {
+        const std::array<PrimitiveParameters, 2> primitives{primitive::Cube{}, primitive::UVSphere{.Slices = 12, .Stacks = 6}};
+        const auto shape = primitives[below(primitives.size())];
+        if (r.get<const Interaction>(state::Document).Mode != InteractionMode::Object) f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+        if (!attempt(action::object::AddMeshPrimitive{shape, std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = {.P = {coordinate(), 0.f, coordinate()}}})})) return false;
+        return edit_gesture(element, [&](auto &&stage) {
+            for (size_t i = 0, count = 1u + below(3); i < count; ++i) stage(at(.02f * float(i + 1u)));
+        });
     };
     const auto subgraphs = [&] { return SortedEntities(r.view<const graph::Subgraph, const graph::GraphNodes>()); };
     const auto scene_subgraphs = [&] {
@@ -925,16 +957,75 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                 }
                 case WalkStep::ExtrudeDrag: {
                     if (select_mesh() == state::Null) return false;
-                    f.EnterEdit(Element::Face);
-                    f.Do(action::selection::SelectAll{});
                     const auto mode = field::EnumValues<action::mesh::ExtrudeMode>[below(field::EnumValues<action::mesh::ExtrudeMode>.size())];
-                    const bool done = gesture(below(3) != 0u, [&](auto &&stage) {
+                    return edit_gesture(Element::Face, [&](auto &&stage) {
                         stage(action::mesh::Extrude{.Mode = mode});
                         for (size_t i = 0, count = 1u + below(3); i < count; ++i) stage(action::view::TransformElements{{.P = {0.f, 0.f, .1f * float(i + 1u)}}});
                     });
-                    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-                    return done;
                 }
+                case WalkStep::LinkOutput: {
+                    // Links an operator's created elements into the selection of a node after it on a mesh's graph, or else appends an operator and a Delete after a node, links them and displays the Delete.
+                    const auto mesh = pick(meshes());
+                    const auto nodes = nodes_of(mesh);
+                    const auto created = [&](state::Entity node) {
+                        std::vector<uint16_t> outputs;
+                        if (r.all_of<graph::SubgraphNode>(node) || r.all_of<graph::Op>(node)) return outputs;
+                        const auto sockets = graph::SocketsOf(r, node);
+                        for (uint16_t s = 0u; s < sockets.size(); ++s) {
+                            if (sockets[s].Direction == SocketDirection::Out && sockets[s].Varies && sockets[s].Types == graph::TypeBit(graph::DataType::Bool)) outputs.push_back(s);
+                        }
+                        return outputs;
+                    };
+                    std::vector<std::pair<state::Entity, state::Entity>> pairs;
+                    for (const auto reader : nodes) {
+                        const auto sockets = r.all_of<graph::SubgraphNode>(reader) ? std::span<const graph::Socket>{} : graph::SocketsOf(r, reader);
+                        if (std::ranges::none_of(sockets, &graph::Socket::Selection)) continue;
+                        // The nodes the reader's geometry comes from.
+                        for (auto from = graph::InputOf(r, reader, 0u).FromNode; from != state::Null && r.all_of<graph::NodeInputs>(from) && !r.all_of<graph::SubgraphNode>(from); from = graph::InputOf(r, from, 0u).FromNode) {
+                            if (!created(from).empty()) pairs.emplace_back(from, reader);
+                            if (graph::InputCountOf(r, from) == 0u) break;
+                        }
+                    }
+                    if (!pairs.empty()) {
+                        const auto [producer, reader] = pairs[below(pairs.size())];
+                        const auto outputs = created(producer);
+                        const auto sockets = graph::SocketsOf(r, reader);
+                        return attempt(Link{mesh, producer, outputs[below(outputs.size())], reader, uint16_t(std::ranges::find_if(sockets, &graph::Socket::Selection) - sockets.begin())});
+                    }
+                    const auto from = result_node(nodes);
+                    if (from == state::Null) return false;
+                    constexpr std::array producers{graph::KindOf<graph::Extrude>, graph::KindOf<action::mesh::Inset>, graph::KindOf<action::mesh::Bevel>, graph::KindOf<action::mesh::Poke>, graph::KindOf<action::mesh::Subdivide>, graph::KindOf<action::mesh::Duplicate>};
+                    const auto producer = add_node(mesh, KindNode{producers[below(producers.size())]});
+                    const auto reader = add_node(mesh, KindNode{graph::KindOf<action::mesh::Delete>});
+                    if (producer == state::Null || reader == state::Null) return false;
+                    const auto outputs = created(producer);
+                    return attempt(Link{mesh, from, *graph::ResultSocket(r, from), producer, 0u}) && attempt(Link{mesh, producer, *graph::ResultSocket(r, producer), reader, 0u}) &&
+                        attempt(Link{mesh, producer, outputs[below(outputs.size())], reader, 1u}) && attempt(SetDisplay{mesh, reader, graph::ResultSocket(r, reader)});
+                }
+                case WalkStep::AddCapture: {
+                    // Appends a Capture of the positions after a node of a mesh's graph, and a Store Named Attribute after it of the held positions, which the mesh displays.
+                    const auto mesh = pick(meshes());
+                    const auto from = result_node(nodes_of(mesh));
+                    if (from == state::Null) return false;
+                    const auto capture = add_node(mesh, KindNode{graph::KindOf<graph::Capture>});
+                    const auto position = add_node(mesh, OpNode{"position"});
+                    const auto store = add_node(mesh, KindNode{graph::KindOf<graph::StoreNamedAttribute>});
+                    if (capture == state::Null || position == state::Null || store == state::Null) return false;
+                    return attempt(Link{mesh, from, *graph::ResultSocket(r, from), capture, 0u}) && attempt(Link{mesh, position, graph::InputCountOf(r, position), capture, 1u}) &&
+                        attempt(Link{mesh, capture, *graph::ResultSocket(r, capture), store, 0u}) && attempt(Link{mesh, capture, uint16_t(*graph::ResultSocket(r, capture) + 1u), store, 1u}) && attempt(SetDisplay{mesh, store, graph::ResultSocket(r, store)});
+                }
+                case WalkStep::InsetDrag: {
+                    const bool individual = below(2) != 0u, even = below(2) != 0u;
+                    return placing_drag(Element::Face, [individual, even](float s) { return action::mesh::Inset{.Thickness = s, .Depth = -s, .Individual = individual, .Even = even}; });
+                }
+                case WalkStep::PokeDrag: return placing_drag(Element::Face, [](float s) { return action::mesh::Poke{.Offset = s}; });
+                case WalkStep::BevelDrag: {
+                    const bool vertices = below(2) != 0u;
+                    const uint32_t segments = 1u + uint32_t(below(3));
+                    return placing_drag(vertices ? Element::Vertex : Element::Edge, [vertices, segments](float s) { return action::mesh::Bevel{.Width = s, .Segments = segments, .Vertices = vertices}; });
+                }
+                case WalkStep::SolidifyDrag: return placing_drag(Element::Face, [](float s) { return action::mesh::Solidify{.Thickness = s}; });
+                case WalkStep::WireframeDrag: return placing_drag(Element::Face, [offset = below(2) ? 0.f : .5f](float s) { return action::mesh::Wireframe{.Thickness = s, .Offset = offset}; });
                 case WalkStep::ViewportOperator: {
                     if (select_mesh() == state::Null) return false;
                     f.EnterEdit(std::array{Element::Vertex, Element::Edge, Element::Face}[below(3)]);

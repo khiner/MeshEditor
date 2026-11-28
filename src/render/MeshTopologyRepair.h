@@ -14,6 +14,8 @@ struct ComputeChain;
 // The repairs share one fragment build on the edits' chain, which submits once for the host to read counts and records, and the chain's owner submits the rest.
 // Builds in `fresh` join the same build so their element owners publish together.
 void RepairTopologyRender(state::Registry &, mtl::ComputeChain &, std::span<const std::pair<state::Entity, const MeshTopologyEdit *>>, std::span<MeshletBuildSource> fresh = {});
+// Whether the render owners of the triangles the published edit changed are every finest cluster of its record, read before the edit finishes.
+bool RetiresEveryCluster(state::Registry &, const MeshTopologyEdit &);
 // The triangle changes of successive in-place topology edits of one record, whose render records none of them repaired.
 struct AccumulatedTriangleEdits {
     IndexMarks Clusters;

@@ -161,7 +161,9 @@ void GraphFixture::CheckStep() {
         bool runs = true;
         for (const auto n : plan.Order) {
             if (!upstream[n]) continue;
-            if (std::ranges::any_of(std::span{plan.Inputs}.subspan(plan.InputFirst[n], plan.InputFirst[n + 1] - plan.InputFirst[n]), [](const auto &input) { return input.Constant.has_value(); })) runs = false;
+            // A constant or a link into an input other than the geometry has no kernel reference.
+            const auto inputs = std::span{plan.Inputs}.subspan(plan.InputFirst[n], plan.InputFirst[n + 1] - plan.InputFirst[n]);
+            if (std::ranges::any_of(inputs, [](const auto &input) { return input.Constant.has_value(); }) || std::ranges::any_of(inputs.subspan(std::min<size_t>(1u, inputs.size())), [](const auto &input) { return input.FromNode != NoNode; })) runs = false;
             const auto &[node, kind, parent, in_builtin_subgraph] = plan.Nodes[n];
             // A built-in subgraph's nodes hold their parameters in the registry of built-in subgraphs.
             if (in_builtin_subgraph) {
@@ -1622,7 +1624,118 @@ void ExpectNaturalEdges(GraphFixture &f, const BuiltGraph &g) {
     };
     expect(natural == shaped(Element::Edge) && natural != shaped(Element::Vertex));
 }
-const std::array<GraphData, 56> DataGraphs{{
+// The Vec3 attribute holds the position each output vertex has in the source.
+bool HoldsSourcePositions(GraphFixture &f, state::Entity mesh, std::string_view name) {
+    const auto &meshes = f.Store();
+    const auto attribute = meshes.FindAttribute(f.Output(mesh), name);
+    if (attribute == InvalidOffset) return false;
+    const auto view = meshes.AttributeView<vec3>(attribute);
+    return f.WithSource(mesh, [&](uint32_t source) {
+        const Mesh points{meshes, source};
+        bool held = true;
+        for (const auto v : points.vertices()) held = held && view[*v] == test::Position(points, v);
+        return held;
+    });
+}
+// The output holds no attribute of a node output.
+bool HoldsNoOutputs(GraphFixture &f, state::Entity mesh) {
+    bool none = true;
+    f.Store().ForEachNamedAttribute(f.Output(mesh), [&](uint32_t, const auto &a) { none = none && !a.NameView().starts_with(".out."); });
+    return none;
+}
+// Capture holds the positions before Set Position doubles them, and Store Named Attribute writes them as "rest".
+const GraphDescription CapturedRest{primitive::Cube{}, {{"position"}, {KindOf<Capture>}, {"position"}, {"multiply", {Literal("in2", 2.f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}, {KindOf<StoreNamedAttribute>, {Named("rest")}}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 0, "in1"}, {2, 5, 0}, {4, 5, 1}, {5, 6, 0}, {2, 6, 1, {}, 3}}, 6};
+// Store Named Attribute writes the positions before Set Position doubles them, and a second one writes them again as "rest" from a read by name.
+const GraphDescription StoredRest{primitive::Cube{}, {{"position"}, {KindOf<StoreNamedAttribute>, {Named("held")}}, {"position"}, {"multiply", {Literal("in2", 2.f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}, {"geompropvalue", {Text("geomprop", "held"), Literal("default", vec3{})}}, {KindOf<StoreNamedAttribute>, {Named("rest")}}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 0, "in1"}, {2, 5, 0}, {4, 5, 1}, {5, 7, 0}, {6, 7, 1}}, 7};
+void ExpectCapturedRest(GraphFixture &f, const BuiltGraph &g) {
+    expect(HoldsSourcePositions(f, g.Mesh, "rest") && HoldsNoOutputs(f, g.Mesh));
+    const auto stored = Build(f, StoredRest);
+    const auto &meshes = f.Store();
+    const auto captured = meshes.AttributeView<vec3>(meshes.FindAttribute(f.Output(g.Mesh), "rest"));
+    const auto read = meshes.AttributeView<vec3>(meshes.FindAttribute(f.Output(stored.Mesh), "rest"));
+    expect(SameBits(f.Shaped(stored.Mesh), f.Shaped(g.Mesh)));
+    for (const auto v : Mesh{meshes, f.Output(g.Mesh)}.vertices()) expect(captured[*v] == read[*v]);
+}
+// The output elements where the Bool attribute holds.
+uint32_t Marked(GraphFixture &f, state::Entity mesh, std::string_view name) {
+    const auto &meshes = f.Store();
+    const auto id = f.Output(mesh);
+    const auto attribute = meshes.FindAttribute(id, name);
+    if (attribute == InvalidOffset || meshes.GetAttribute(attribute).Type != AttributeType::Bool) return UINT32_MAX;
+    const auto view = meshes.AttributeView<bool>(attribute);
+    return uint32_t(std::ranges::count_if(AllHandles(Mesh{meshes, id}).Get(ElementOf(meshes.GetAttribute(attribute).Domain)), [&](uint32_t handle) { return view[handle]; }));
+}
+// Expects the counts of the elements the stored outputs mark, from "a" on, and no hidden attribute on the output.
+void ExpectMarked(GraphFixture &f, state::Entity mesh, std::initializer_list<uint32_t> counts) {
+    for (char name = 'a'; const auto count : counts) {
+        const auto marked = Marked(f, mesh, std::string(1u, name++));
+        expect(marked == count) << std::string(1u, char(name - 1)) << marked;
+    }
+    expect(HoldsNoOutputs(f, mesh));
+}
+// A chain of nodes after the displayed node writing consecutive outputs of the description's kind node `node` as "a", "b" and on, on the domains, the last of which it then displays.
+GraphDescription StoringOutputs(GraphDescription graph, uint32_t node, std::initializer_list<AttributeDomain> domains) {
+    auto output = FieldOutput(std::get<uint16_t>(graph.Nodes[node - 1u].Kind));
+    for (char name = 'a'; const auto domain : domains) {
+        const auto store = uint32_t(graph.Nodes.size() + 1u);
+        graph.Nodes.push_back({KindOf<StoreNamedAttribute>, {Named(std::string(1u, name++)), Set<&StoreNamedAttribute::Domain>(domain)}});
+        graph.Links.push_back({graph.Display, store, 0u});
+        graph.Links.push_back({node, store, 1u, {}, output++});
+        graph.Display = store;
+    }
+    return graph;
+}
+// The 2 by 2 plane's extrusion of every face, before a Subdivide whose cuts the edit raises.
+const GraphDescription ExtrudedPlane{primitive::Plane{.Subdivisions = {2u, 2u}}, {{KindOf<graph::Extrude>, {Set<&graph::Extrude::OffsetScale>(.5f)}}, {KindOf<action::mesh::Subdivide>}}, {{0, 1, 0}, {1, 2, 0}}, 2};
+// Each of the extrusion's four top faces and eight side faces splits into four, and then into nine.
+void ExpectTopSide(GraphFixture &f, const BuiltGraph &g) {
+    ExpectMarked(f, g.Mesh, {16u, 32u});
+    // A change to the cuts keeps the extrusion's output, and the next change cooks from it, which holds the extrusion's outputs for the stores after it.
+    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(g.Nodes[2], 2u));
+    ExpectMarked(f, g.Mesh, {36u, 72u});
+    const auto nodes = f.R.Resources.get<const CookCount>().Nodes;
+    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(g.Nodes[2], 1u));
+    expect(f.R.Resources.get<const CookCount>().Nodes - nodes == 3u) << "cooked" << f.R.Resources.get<const CookCount>().Nodes - nodes;
+    ExpectMarked(f, g.Mesh, {16u, 32u});
+}
+// The 2 by 2 plane under an operator of the kind with the updates.
+GraphDescription PlaneUnder(uint16_t kind, std::vector<NodeUpdate> updates) { return {primitive::Plane{.Subdivisions = {2u, 2u}}, {{kind, std::move(updates)}}, {{0, 1, 0}}, 1}; }
+// An oracle that expects those counts of the built graph's output.
+template<uint32_t... Counts> constexpr auto Marks = [](GraphFixture &f, const BuiltGraph &g) { ExpectMarked(f, g.Mesh, {Counts...}); };
+// An eight-slice cylinder generated in place of the source.
+GraphDescription Generated(std::vector<NodeUpdate> updates) {
+    updates.push_back(Set<&primitive::Cylinder::Slices>(8u));
+    return {primitive::Cube{}, {{KindOf<primitive::Cylinder>, std::move(updates)}}, {}, 1};
+}
+// The intersection of the cube with a bar through its x sides is the bar's middle, whose faces along x come from the bar and whose caps come from the cube.
+// The intersection edges are the edges between a face of the bar and a face of the cube.
+void ExpectBooleanOutputs(GraphFixture &f, const BuiltGraph &g) {
+    const auto &meshes = f.Store();
+    const auto id = f.Output(g.Mesh);
+    const auto edges = meshes.AttributeView<bool>(meshes.FindAttribute(id, "a"));
+    const auto faces = meshes.AttributeView<bool>(meshes.FindAttribute(id, "b"));
+    const Mesh output{meshes, id};
+    uint32_t bar = 0u, intersection = 0u;
+    for (const auto face : output.faces()) {
+        bar += faces[*face];
+        expect(faces[*face] == (std::abs(test::Normal(output, face).x) < .5f));
+    }
+    for (const auto e : output.edges()) {
+        const auto h = test::Halfedge(output, e);
+        intersection += edges[*e];
+        expect(edges[*e] == (faces[*test::Face(output, h)] != faces[*test::Face(output, test::Opposite(output, h))]));
+    }
+    expect(bar > 0u && intersection >= 8u && HoldsNoOutputs(f, g.Mesh)) << "bar" << bar << "intersection" << intersection;
+}
+// An eight-segment circle of edges, which loops without a face.
+const primitive::Circle EdgeLoop{.Segments = 8u, .Fill = primitive::FillType::None};
+// The hull's faces are every face of its output.
+void ExpectHull(GraphFixture &f, const BuiltGraph &g) {
+    const auto faces = Mesh{f.Store(), f.Output(g.Mesh)}.FaceCount();
+    expect(faces > 0u);
+    ExpectMarked(f, g.Mesh, {faces});
+}
+const std::array<GraphData, 80> DataGraphs{{
     {"ExtrudeSubdivide", {primitive::Plane{}, {{KindOf<graph::Extrude>}, {KindOf<action::mesh::Subdivide>, {Set<&action::mesh::Subdivide::Cuts>(2u)}}}, {{0, 1, 0}, {1, 2, 0}}, 2}, nullptr, [](GraphFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 2u), 3u)); }},
     {"ScalePositions", DoubledPositions, [](GraphFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](GraphFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 2u), "in2", 3.f); }, CalledInput{1u, vec3{}}},
     // The selection evaluates on vertices in place of Extrude's faces, so its program reads the positions where they are stored.
@@ -1798,6 +1911,53 @@ const std::array<GraphData, 56> DataGraphs{{
     {"PointColors", {ColoredPoints(), {{"geomcolor", {OutputType(mx::Type::Color4)}}, {KindOf<StoreNamedAttribute>, {Named("color")}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, ExpectVertexColors, nullptr},
     // The positions in front of the plane x + z = 0 are two vertices, five edges and two faces of the cube.
     {"NaturalEdges", {primitive::Cube{}, {{"planeside", {Literal("normal", vec3{1.f, 0.f, 1.f}), Literal("side", 0)}}, {KindOf<action::mesh::Bevel>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, ExpectNaturalEdges, nullptr},
+    // The edit triples the positions in place of doubling them, which leaves the held positions as they were.
+    {"CaptureBeforeSetPosition", CapturedRest, ExpectCapturedRest, [](GraphFixture &f, state::Entity mesh) {
+         SetLiteral(f, f.Node(mesh, 4u), "in2", 3.f);
+         expect(HoldsSourcePositions(f, mesh, "rest")); }},
+    {"ExtrudeTopSide", StoringOutputs(ExtrudedPlane, 1u, {AttributeDomain::Face, AttributeDomain::Face}), ExpectTopSide, [](GraphFixture &f, state::Entity mesh) { f.Do(UpdateOf<&graph::Extrude::OffsetScale>(f.Node(mesh, 1u), 1.f)); }},
+    // Deleting the extrusion's four top faces leaves its 12 other faces.
+    {"ExtrudeTopDeletes", {primitive::Plane{.Subdivisions = {2u, 2u}}, {{KindOf<graph::Extrude>, {Set<&graph::Extrude::OffsetScale>(.5f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}}, {{0, 1, 0}, {1, 2, 0}, {1, 2, 1, {}, FieldOutput(KindOf<graph::Extrude>)}}, 2}, [](GraphFixture &f, const BuiltGraph &g) { expect(HoldsNoOutputs(f, g.Mesh)); }, [](GraphFixture &f, state::Entity mesh) { f.Do(UpdateOf<&graph::Extrude::OffsetScale>(f.Node(mesh, 1u), 1.f)); }, {}, 12u},
+    // Each of the plane's 12 edges extrudes to a top edge and a side face.
+    {"ExtrudeEdgesTopSide", StoringOutputs(PlaneUnder(KindOf<graph::Extrude>, {Set<&graph::Extrude::Mode>(action::mesh::ExtrudeMode::Edges), Set<&graph::Extrude::OffsetScale>(.5f)}), 1u, {AttributeDomain::Edge, AttributeDomain::Face}), Marks<12u, 12u>, nullptr},
+    // Each of the plane's nine vertices extrudes to a top vertex along a side edge.
+    {"ExtrudeVerticesTopSide", StoringOutputs(PlaneUnder(KindOf<graph::Extrude>, {Set<&graph::Extrude::Mode>(action::mesh::ExtrudeMode::Vertices), Set<&graph::Extrude::OffsetScale>(.5f)}), 1u, {AttributeDomain::Vertex, AttributeDomain::Edge}), Marks<9u, 9u>, nullptr},
+    // The region's four inner faces sit inside a rim of eight, one along each boundary edge.
+    {"InsetInnerRim", StoringOutputs(PlaneUnder(KindOf<action::mesh::Inset>, {}), 1u, {AttributeDomain::Face, AttributeDomain::Face}), Marks<4u, 8u>, nullptr},
+    // Each face's inner face sits inside a rim of four.
+    {"InsetIndividualInnerRim", StoringOutputs(PlaneUnder(KindOf<action::mesh::Inset>, {Set<&action::mesh::Inset::Individual>(true)}), 1u, {AttributeDomain::Face, AttributeDomain::Face}), Marks<4u, 16u>, nullptr},
+    // Each end's cap is a face, a fan of eight triangles, or else the end's eight vertices, a cone's top is its tip, and the side is the eight faces between the ends.
+    {"CylinderParts", StoringOutputs(Generated({}), 1u, {AttributeDomain::Face, AttributeDomain::Face, AttributeDomain::Face}), Marks<1u, 1u, 8u>, [](GraphFixture &f, state::Entity mesh) {
+         f.Do(UpdateOf<&primitive::Cylinder::Cap>(f.Node(mesh, 1u), primitive::FillType::Fan));
+         ExpectMarked(f, mesh, {8u, 8u, 8u}); }},
+    {"CylinderOpenEnds", StoringOutputs(Generated({Set<&primitive::Cylinder::Cap>(primitive::FillType::None)}), 1u, {AttributeDomain::Vertex, AttributeDomain::Vertex}), Marks<8u, 8u>, nullptr},
+    {"ConeTopBottom", StoringOutputs(Generated({Set<&primitive::Cylinder::TopRadius>(std::optional{0.f})}), 1u, {AttributeDomain::Vertex, AttributeDomain::Face}), Marks<1u, 1u>, nullptr},
+    // The cube's two-segment edge bevel has a face at each of its eight corners and a strip of two faces along each of its 12 edges, whose rows are two outer edges and one in the middle.
+    {"BevelOutputs", StoringOutputs({primitive::Cube{}, {{KindOf<action::mesh::Bevel>, {Set<&action::mesh::Bevel::Segments>(2u)}}}, {{0, 1, 0}}, 1}, 1u, {AttributeDomain::Face, AttributeDomain::Face, AttributeDomain::Edge, AttributeDomain::Edge}), Marks<8u, 24u, 24u, 12u>, [](GraphFixture &f, state::Entity mesh) {
+         f.Do(UpdateOf<&action::mesh::Bevel::Segments>(f.Node(mesh, 1u), 1u));
+         ExpectMarked(f, mesh, {8u, 12u, 24u, 12u}); }},
+    {"BooleanOutputs", StoringOutputs({primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .25f, .75f})}}, {KindOf<graph::Boolean>, {Set<&graph::Boolean::Operation>(BooleanOperation::Intersection)}}}, {{0, 2, 0}, {1, 2, 1}}, 2}, 2u, {AttributeDomain::Edge, AttributeDomain::Face}), ExpectBooleanOutputs, nullptr},
+    // Each face's poke adds one center vertex.
+    {"PokeCenter", StoringOutputs(PlaneUnder(KindOf<action::mesh::Poke>, {}), 1u, {AttributeDomain::Vertex}), Marks<4u>, nullptr},
+    // One cut through every edge splits each face into four, across four new edges.
+    {"SubdivideCut", StoringOutputs(PlaneUnder(KindOf<action::mesh::Subdivide>, {}), 1u, {AttributeDomain::Edge}), Marks<16u>, nullptr},
+    // The plane x = 0.5 crosses the two faces of the plane's x > 0 column.
+    {"BisectCut", StoringOutputs(PlaneUnder(KindOf<graph::Bisect>, {Set<&graph::Bisect::Point>(vec3{.5f, 0.f, 0.f})}), 1u, {AttributeDomain::Edge}), Marks<2u>, nullptr},
+    // A view along z, two pixels wide, sees the line x = 0.5 cross the cube's four edges along x, which cut its four faces around x.
+    {"KnifeCut", StoringOutputs({primitive::Cube{}, {{KindOf<graph::Knife>, {Set<&graph::Knife::Start>(vec2{1.5f, -1.f}), Set<&graph::Knife::End>(vec2{1.5f, 3.f}), Set<&graph::Knife::Extent>(vec2{2.f, 2.f})}}}, {{0, 1, 0}}, 1}, 1u, {AttributeDomain::Edge}), Marks<4u>, nullptr},
+    // The plane's vertices on the line x + z = 0 are opposite corners of two faces, which each split along one chord.
+    {"ConnectCut", StoringOutputs({primitive::Plane{.Subdivisions = {2u, 2u}}, {{"position"}, {"dotproduct", {Literal("in2", vec3{1.f, 0.f, 1.f})}}, {"absval"}, {"ifgreater", {Literal("value1", .01f)}}, {KindOf<action::mesh::ConnectVertices>}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in"}, {3, 4, 0, "value2"}, {4, 5, 1}, {0, 5, 0}}, 5}, 5u, {AttributeDomain::Edge}), Marks<2u>, nullptr},
+    {"FillFace", StoringOutputs({EdgeLoop, {{KindOf<action::mesh::Fill>}}, {{0, 1, 0}}, 1}, 1u, {AttributeDomain::Face}), Marks<1u>, nullptr},
+    // A grid two edges along the loop's first side fills it with four quads.
+    {"GridFillFaces", StoringOutputs({EdgeLoop, {{KindOf<action::mesh::GridFill>, {Set<&action::mesh::GridFill::Span>(2u)}}}, {{0, 1, 0}}, 1}, 1u, {AttributeDomain::Face}), Marks<4u>, nullptr},
+    // Two loops of eight edges a unit apart bridge with eight faces.
+    {"BridgeFaces", StoringOutputs({EdgeLoop, {{KindOf<TransformElements>, {Set<&TransformElements::Delta, &Transform::P>(vec3{0.f, 1.f, 0.f})}}, {KindOf<Join>}, {KindOf<action::mesh::BridgeEdgeLoops>}}, {{0, 1, 0}, {0, 2, 0}, {1, 2, 0}, {2, 3, 0}}, 3}, 3u, {AttributeDomain::Face}), Marks<8u>, nullptr},
+    {"HullFaces", StoringOutputs({primitive::Cube{}, {{KindOf<action::mesh::ConvexHull>}}, {{0, 1, 0}}, 1}, 1u, {AttributeDomain::Face}), ExpectHull, nullptr},
+    // The copies of the plane's nine vertices, and of its four faces where the selection applies to faces.
+    {"DuplicateCopies", StoringOutputs(PlaneUnder(KindOf<action::mesh::Duplicate>, {}), 1u, {AttributeDomain::Vertex}), Marks<9u>, nullptr},
+    {"DuplicateFaceCopies", StoringOutputs(PlaneUnder(KindOf<action::mesh::Duplicate>, {SelectsOn(Element::Face)}), 1u, {AttributeDomain::Face}), Marks<4u>, nullptr},
+    // The four faces' shell joins them along a rim of eight.
+    {"SolidifyShellRim", StoringOutputs(PlaneUnder(KindOf<action::mesh::Solidify>, {}), 1u, {AttributeDomain::Face, AttributeDomain::Face}), Marks<4u, 8u>, nullptr},
 }};
 const auto BoxTextured = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf";
 // A Join appends the primitive tables of a textured box and its subdivided copy, and a generated cube's faces read one primitive past them.
@@ -1833,8 +1993,32 @@ GraphCase JoinedMaterials(GraphFixture &f) {
         },
     };
 }
-constexpr std::array<GraphRow, 15> BuiltGraphs{{
+// The Bisect Fill subgraph's Fill port gives the face that caps the cube's cut, through its Fill node's output.
+GraphCase BisectFillCap(GraphFixture &f) {
+    const auto mesh = f.AddMesh(primitive::Cube{});
+    const auto source = f.Node(mesh, 0u);
+    f.Do(AddNode{mesh, action::nodes::BuiltinSubgraphNode{graph::BuiltinSubgraphId::BisectFill}});
+    const auto bisect = graph::ActiveNodeOf(f.R, mesh);
+    const auto ports = PortIds(f.R, bisect);
+    expect(fatal(ports.size() == 7u));
+    const auto store = f.Append(mesh, KindOf<StoreNamedAttribute>, {Named("a"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face)});
+    f.Do(Link{mesh, source, f.Out(source), bisect, ports[0]});
+    f.Do(Link{mesh, bisect, ports[5], store, 0u});
+    f.Do(Link{mesh, bisect, ports[6], store, 1u});
+    f.Do(SetDisplay{mesh, store});
+    return {
+        mesh,
+        [mesh](GraphFixture &f) { ExpectMarked(f, mesh, {1u}); },
+        [point = ports[1]](GraphFixture &f, state::Entity mesh) {
+            f.Do(action::nodes::SetPortValue{f.Node(mesh, 1u), point, {std::bit_cast<uint32_t>(.5f), 0u, 0u, 0u}});
+            ExpectMarked(f, mesh, {1u});
+        },
+    };
+}
+
+constexpr std::array<GraphRow, 16> BuiltGraphs{{
     {"CapInset", CapInset},
+    {"BisectFillCap", BisectFillCap},
     {"StoreSelectionDelete", StoreSelectionDelete},
     {"HeatSubdivide", HeatSubdivide},
     {"CrossSectionOfCone", CrossSectionOfCone},
@@ -1853,7 +2037,7 @@ constexpr std::array<GraphRow, 15> BuiltGraphs{{
 
 // The graph with the called link's op output stored on the input's domain by a Store node on the consumer's geometry and read back by a geompropvalue op.
 GraphDescription Stored(GraphDescription graph, const CalledInput &called) {
-    const auto [from, to, socket, input] = graph.Links[called.Link];
+    const auto [from, to, socket, input, output] = graph.Links[called.Link];
     const auto store = uint32_t(graph.Nodes.size() + 1u), read = store + 1u;
     graph.Nodes.push_back({KindOf<StoreNamedAttribute>, {Named("called"), Set<&StoreNamedAttribute::Domain>(called.Domain)}});
     graph.Nodes.push_back({"geompropvalue", {Text("geomprop", "called"), Literal("default", called.Default)}});

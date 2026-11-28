@@ -58,6 +58,11 @@ struct StoreNamedAttribute {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
 
+// Hold the Value field evaluated on Domain of the input geometry, which the Value output gives at the elements the geometry passes on to the nodes after it.
+struct Capture {
+    AttributeDomain Domain{AttributeDomain::Vertex};
+};
+
 // Replace the named Bool attribute with the selection, in a linked attribute's domain or else the edit domain of the inline selection.
 struct StoreSelection {
     AttributeName Name{};
@@ -313,7 +318,7 @@ using NodeKinds = TypeList<
     Bisect, Project,
     action::mesh::ConvexHull, action::mesh::Simplify, action::mesh::RecalculateNormals, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
     action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, Knife, action::mesh::CycleCornerAttribute, MarkSharp, Shade, TransformElements,
-    StoreNamedAttribute, StoreSelection, Bake, SetPosition,
+    StoreNamedAttribute, Capture, StoreSelection, Bake, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo, SubgraphNode, Op, Surface>;
 template<typename K>
 concept Operated = requires { requires std::is_enum_v<decltype(K::Operation)>; };
@@ -358,11 +363,25 @@ inline constexpr Socket SelectionSocket{.Types = Bool, .Direction = In, .Varies 
 
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket JoinSockets[]{Many({Geometry, In, Single, true}), {Geometry, Out}};
-inline constexpr Socket BooleanSockets[]{{Geometry, In, Single, true, "Mesh 1"}, Many({Geometry, In, Single, true, "Mesh 2"}), {Geometry, Out}};
+inline constexpr Socket BooleanSockets[]{{Geometry, In, Single, true, "Mesh 1"}, Many({Geometry, In, Single, true, "Mesh 2"}), {Geometry, Out}, {Bool, Out, Varying, false, "Intersection"}, {Bool, Out, Varying, false, "Mesh 2"}};
 inline constexpr Socket MinkowskiSockets[]{{Geometry, In, Single, true, "Mesh 1"}, {Geometry, In, Single, true, "Mesh 2"}, {Geometry, Out}};
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}};
+// An operator's Bool outputs, each true on the elements of one set it creates.
+constexpr Socket Created(const char *name) { return {Bool, Out, Varying, false, name}; }
+inline constexpr Socket ExtrudeSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Top"), Created("Side")};
+inline constexpr Socket InsetSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Inner"), Created("Rim")};
+inline constexpr Socket CylinderSockets[]{{Geometry, Out}, Created("Top"), Created("Bottom"), Created("Side")};
+inline constexpr Socket BevelSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Vertex Face"), Created("Edge Face"), Created("Outer Edge"), Created("Mid Edge")};
+inline constexpr Socket PokeSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Center")};
+inline constexpr Socket CutSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Cut")};
+inline constexpr Socket KnifeSockets[]{{Geometry, In}, {Geometry, Out}, Created("Cut")};
+inline constexpr Socket FillSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Fill")};
+inline constexpr Socket HullSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Hull")};
+inline constexpr Socket DuplicateSockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Copies")};
+inline constexpr Socket SolidifySockets[]{{Geometry, In}, SelectionSocket, {Geometry, Out}, Created("Shell"), Created("Rim")};
 inline constexpr Socket LevelSetSockets[]{{Float, In, Varying, false, "Value"}, {Geometry, Out}};
 inline constexpr Socket StoreSockets[]{{Geometry, In}, {NumericTypes, In, Varying, false, "Value"}, {Geometry, Out}};
+inline constexpr Socket CaptureSockets[]{{Geometry, In}, {NumericTypes, In, Varying, false, "Value"}, {Geometry, Out}, {NumericTypes, Out, Varying, false, "Value"}};
 inline constexpr Socket BakeSockets[]{{Geometry, In, Single, true}, {ImageValues, In, Varying, false, "Value"}, {Image, Out}};
 inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {.Types = Vec3, .Direction = In, .Varies = Varying, .Name = "Position", .Called = true}, SelectionSocket, {Geometry, Out}};
 inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out, Single, false, "Points"}};
@@ -423,26 +442,26 @@ template<> inline constexpr KindSpec Kind<primitive::IcoSphere>{.Sockets = detai
 template<> inline constexpr KindSpec Kind<primitive::UVSphere>{.Sockets = detail::SourceSockets, .Group = KindGroup::Generators, .Help = "Generates a sphere of slices around the Y axis and stacks along it"};
 template<> inline constexpr KindSpec Kind<primitive::QuadSphere>{.Sockets = detail::SourceSockets, .Group = KindGroup::Generators, .Help = "Generates a sphere of quads by mapping a subdivided cube onto it"};
 template<> inline constexpr KindSpec Kind<primitive::Torus>{.Sockets = detail::SourceSockets, .Group = KindGroup::Generators, .Help = "Generates a torus around the Y axis"};
-template<> inline constexpr KindSpec Kind<primitive::Cylinder>{.Sockets = detail::SourceSockets, .Group = KindGroup::Generators, .Help = "Generates a cylinder, frustum or cone along the Y axis, centered on the origin"};
+template<> inline constexpr KindSpec Kind<primitive::Cylinder>{.Sockets = detail::CylinderSockets, .Group = KindGroup::Generators, .Help = "Generates a cylinder, frustum or cone along the Y axis, centered on the origin"};
 template<> inline constexpr KindSpec Kind<LevelSet>{.Sockets = detail::LevelSetSockets, .Group = KindGroup::Generators, .Help = "Marches the surface where a field crosses a level over a box"};
 template<> inline constexpr KindSpec Kind<action::mesh::Delete>{.Help = "Deletes the selected vertices, edges, or faces"};
 template<> inline constexpr KindSpec Kind<action::mesh::Merge>{.Help = "Merges the selected vertices into one, or merges nearby pairs"};
-template<> inline constexpr KindSpec Kind<Extrude>{.Help = "Extrudes the selected elements in steps, rotating about an axis and moving by the offset, joined to the geometry they came from"};
-template<> inline constexpr KindSpec Kind<action::mesh::Duplicate>{.Help = "Duplicates the selected faces in place onto copied vertices"};
+template<> inline constexpr KindSpec Kind<Extrude>{.Sockets = detail::ExtrudeSockets, .Help = "Extrudes the selected elements in steps, rotating about an axis and moving by the offset, joined to the geometry they came from"};
+template<> inline constexpr KindSpec Kind<action::mesh::Duplicate>{.Sockets = detail::DuplicateSockets, .Help = "Duplicates the selected faces in place onto copied vertices"};
 template<> inline constexpr KindSpec Kind<action::mesh::Split>{.Help = "Disconnects the selected faces from the unselected geometry around them"};
 template<> inline constexpr KindSpec Kind<action::mesh::Dissolve>{.Help = "Removes the selected elements and joins the faces around them"};
-template<> inline constexpr KindSpec Kind<action::mesh::Subdivide>{.Natural = Element::Edge, .Help = "Cuts the selected edges and splits their faces into smaller faces"};
+template<> inline constexpr KindSpec Kind<action::mesh::Subdivide>{.Sockets = detail::CutSockets, .Natural = Element::Edge, .Help = "Cuts the selected edges and splits their faces into smaller faces"};
 template<> inline constexpr KindSpec Kind<SubdivisionSurface>{.Sockets = detail::WholeSockets, .Help = "Smooths the whole mesh by Catmull-Clark subdivision"};
 template<> inline constexpr KindSpec Kind<SmoothSurface>{.Sockets = detail::WholeSockets, .Help = "Refines a closed mesh onto smooth patches through its shading normals, so flat-shaded faces and sharp edges stay creased"};
 template<> inline constexpr KindSpec Kind<action::mesh::SplitFaces>{.Natural = Element::Face, .Help = "Splits the selected faces until each part is a triangle, is convex, or is planar within Angle"};
 template<> inline constexpr KindSpec Kind<action::mesh::TrisToQuads>{.Natural = Element::Face, .Help = "Joins pairs of selected triangles into quads"};
-template<> inline constexpr KindSpec Kind<action::mesh::Poke>{.Natural = Element::Face, .Help = "Fans each selected face around a new center vertex"};
+template<> inline constexpr KindSpec Kind<action::mesh::Poke>{.Sockets = detail::PokeSockets, .Natural = Element::Face, .Help = "Fans each selected face around a new center vertex"};
 template<> inline constexpr KindSpec Kind<action::mesh::FlipNormals>{.Natural = Element::Face, .Help = "Reverses the winding and normals of the selected faces"};
 template<> inline constexpr KindSpec Kind<action::mesh::EdgeSplit>{.Natural = Element::Edge, .Help = "Splits the mesh along the selected edges, disconnecting the faces on either side"};
-template<> inline constexpr KindSpec Kind<action::mesh::Inset>{.Natural = Element::Face, .Help = "Insets the selected faces, as one region or each face on its own"};
-template<> inline constexpr KindSpec Kind<action::mesh::Solidify>{.Natural = Element::Face, .Help = "Thickens the selected faces into a shell, with a rim along the region boundary"};
+template<> inline constexpr KindSpec Kind<action::mesh::Inset>{.Sockets = detail::InsetSockets, .Natural = Element::Face, .Help = "Insets the selected faces, as one region or each face on its own"};
+template<> inline constexpr KindSpec Kind<action::mesh::Solidify>{.Sockets = detail::SolidifySockets, .Natural = Element::Face, .Help = "Thickens the selected faces into a shell, with a rim along the region boundary"};
 template<> inline constexpr KindSpec Kind<action::mesh::Wireframe>{.Natural = Element::Face, .Help = "Builds solid struts along the edges of the selected faces"};
-template<> inline constexpr KindSpec Kind<action::mesh::Bevel>{.Help = "Bevels the selected edges or vertices"};
+template<> inline constexpr KindSpec Kind<action::mesh::Bevel>{.Sockets = detail::BevelSockets, .Help = "Bevels the selected edges or vertices"};
 template<> inline constexpr KindSpec Kind<action::mesh::SmoothVertices>{.Help = "Moves the selected vertices toward the mean of their edge neighbors"};
 template<> inline constexpr KindSpec Kind<action::mesh::ShrinkFatten>{.Help = "Moves the selected vertices along their normals"};
 template<> inline constexpr KindSpec Kind<action::mesh::Randomize>{.Help = "Offsets the selected vertices by repeatable random amounts"};
@@ -460,24 +479,25 @@ template<> inline constexpr KindSpec Kind<Bend>{.Help = "Bends the selected vert
 template<> inline constexpr KindSpec Kind<VertexSlide>{.Help = "Slides each selected vertex along its incident edge nearest Direction"};
 template<> inline constexpr KindSpec Kind<EdgeSlide>{.Natural = Element::Edge, .Help = "Slides the selected edge chains along their adjacent faces"};
 template<> inline constexpr KindSpec Kind<action::mesh::SnapSymmetry>{.Help = "Snaps the selected vertices to their mirrored partners across an axis plane"};
-template<> inline constexpr KindSpec Kind<Bisect>{.Help = "Cuts the mesh along a plane and deletes the vertices beyond it on the cleared sides"};
+template<> inline constexpr KindSpec Kind<Bisect>{.Sockets = detail::CutSockets, .Help = "Cuts the mesh along a plane and deletes the vertices beyond it on the cleared sides"};
 template<> inline constexpr KindSpec Kind<Project>{.Sockets = detail::WholeSockets, .Help = "Leaves the outline of the mesh seen along a direction, as a region on a plane"};
-template<> inline constexpr KindSpec Kind<action::mesh::ConvexHull>{.Help = "Replaces the selection with the convex hull of the selected vertices"};
+template<> inline constexpr KindSpec Kind<action::mesh::ConvexHull>{.Sockets = detail::HullSockets, .Help = "Replaces the selection with the convex hull of the selected vertices"};
 template<> inline constexpr KindSpec Kind<action::mesh::Simplify>{.Help = "Collapses edges within a tolerance, then toward a triangle ratio"};
 template<> inline constexpr KindSpec Kind<action::mesh::RecalculateNormals>{.Natural = Element::Face, .Help = "Makes the selected faces' normals point outside each closed surface they belong to"};
-template<> inline constexpr KindSpec Kind<action::mesh::ConnectVertices>{.Help = "Splits faces along chords between their consecutive selected vertices"};
-template<> inline constexpr KindSpec Kind<action::mesh::Fill>{.Natural = Element::Edge, .Help = "Creates an edge from two selected vertices, fills the selected loops of at most Sides edges, or forms a face from the selected points"};
-template<> inline constexpr KindSpec Kind<action::mesh::BridgeEdgeLoops>{.Natural = Element::Edge, .Help = "Bridges two selected edge loops or chains with a strip of faces"};
-template<> inline constexpr KindSpec Kind<action::mesh::GridFill>{.Natural = Element::Edge, .Help = "Fills one selected closed loop with a grid of quads"};
+template<> inline constexpr KindSpec Kind<action::mesh::ConnectVertices>{.Sockets = detail::CutSockets, .Help = "Splits faces along chords between their consecutive selected vertices"};
+template<> inline constexpr KindSpec Kind<action::mesh::Fill>{.Sockets = detail::FillSockets, .Natural = Element::Edge, .Help = "Creates an edge from two selected vertices, fills the selected loops of at most Sides edges, or forms a face from the selected points"};
+template<> inline constexpr KindSpec Kind<action::mesh::BridgeEdgeLoops>{.Sockets = detail::FillSockets, .Natural = Element::Edge, .Help = "Bridges two selected edge loops or chains with a strip of faces"};
+template<> inline constexpr KindSpec Kind<action::mesh::GridFill>{.Sockets = detail::FillSockets, .Natural = Element::Edge, .Help = "Fills one selected closed loop with a grid of quads"};
 template<> inline constexpr KindSpec Kind<action::mesh::EdgeRotate>{.Natural = Element::Edge, .Help = "Rotates each selected edge between its two faces"};
 template<> inline constexpr KindSpec Kind<action::mesh::BeautifyFaces>{.Natural = Element::Face, .Help = "Rearranges the selected triangles into more evenly shaped ones"};
 template<> inline constexpr KindSpec Kind<action::mesh::Unsubdivide>{.Help = "Reverses subdivision by removing alternate selected vertices of regular regions"};
-template<> inline constexpr KindSpec Kind<Knife>{.Sockets = detail::WholeSockets, .Help = "Cuts every edge whose projection in a view crosses a screen segment"};
+template<> inline constexpr KindSpec Kind<Knife>{.Sockets = detail::KnifeSockets, .Help = "Cuts every edge whose projection in a view crosses a screen segment"};
 template<> inline constexpr KindSpec Kind<action::mesh::CycleCornerAttribute>{.Natural = Element::Face, .Help = "Shifts or reverses the UVs or colors around the corners of the selected faces"};
 template<> inline constexpr KindSpec Kind<MarkSharp>{.Natural = Element::Edge, .Help = "Marks the selected edges sharp or smooth, or shades the selected faces flat or smooth"};
 template<> inline constexpr KindSpec Kind<Shade>{.Sockets = detail::WholeSockets, .Help = "Shades every face flat, smooth, or smooth with sharp edges where adjacent faces meet at more than Angle"};
 template<> inline constexpr KindSpec Kind<TransformElements>{.Help = "Moves, rotates, and scales the selected vertices, all by default, around a pivot, after reflecting them across a mirror plane through it"};
 template<> inline constexpr KindSpec Kind<StoreNamedAttribute>{.Sockets = detail::StoreSockets, .Group = KindGroup::Attributes, .Help = "Writes the Value input to the named attribute of the geometry"};
+template<> inline constexpr KindSpec Kind<Capture>{.Sockets = detail::CaptureSockets, .Group = KindGroup::Attributes, .Help = "Holds the Value input as the geometry has it here, which the Value output gives to the nodes after it"};
 template<> inline constexpr KindSpec Kind<StoreSelection>{.Group = KindGroup::Attributes, .Help = "Writes the selection to the named Boolean attribute of the geometry"};
 template<> inline constexpr KindSpec Kind<Bake>{.Sockets = detail::BakeSockets, .Group = KindGroup::Attributes, .Help = "Stores the Value field over the geometry's UV layout in an image"};
 template<> inline constexpr KindSpec Kind<SetPosition>{.Sockets = detail::SetPositionSockets, .Group = KindGroup::Attributes, .Help = "Sets or offsets the selected vertices' positions from a vector attribute"};
@@ -598,6 +618,8 @@ inline constexpr auto MultiInput = detail::PerKind(NodeKinds{}, []<typename K> {
 // A node has one input slot per input socket, then one slot per extra link of its multi-input socket, in order.
 // The first link of a multi-input socket is in the socket's own slot.
 // A node whose sockets come from its subgraph has one slot per input socket.
+// The kind's output socket `i` after its result.
+constexpr uint16_t FieldOutput(uint16_t kind, uint32_t i = 0u) { return uint16_t(InputCount[kind] + 1u + i); }
 constexpr uint16_t SlotSocket(uint16_t kind, uint16_t slot) { return MultiInput[kind] != NoSocket && slot >= InputCount[kind] ? MultiInput[kind] : slot; }
 constexpr uint16_t SlotOf(uint16_t kind, uint16_t socket, uint16_t index) { return index == 0u ? socket : uint16_t(InputCount[kind] + index - 1u); }
 constexpr uint16_t NextMultiSlot(uint16_t kind, uint16_t slot) { return slot < InputCount[kind] ? InputCount[kind] : uint16_t(slot + 1u); }
@@ -1104,18 +1126,23 @@ struct SourceState {
 // What the chained display path's cook keeps for each of its nodes.
 // Input is the path node whose result this node ran on, or empty for the root.
 // The path's last node holds a pending zero state, and the record holds that node's result as it stands.
+// Outputs identifies the hidden attributes of node outputs the record holds in State, and is zero for none.
 struct NodeResult {
     NodePath Input{};
     store::Hash128 State{};
     uint32_t StoreId{InvalidOffset};
+    store::Hash128 Outputs{};
     bool operator==(const NodeResult &) const = default;
 };
-struct NodeExtrusion {
-    store::Hash128 State{}, Selection{};
-    action::mesh::ExtrudeMode Mode{};
+// What the chained display path's cook keeps of the topology an Extrude or placing node leaves before its scalars move any vertex.
+// State is the mesh storage state of that topology, or zero, Selection and Topology are the hashes of the node's selection and of the other parameters its topology reads, and Outputs is the hash of the node outputs the state's record holds.
+// An Extrude node keeps its region normal and each vertex it extruded, and a placing node the vertices its scalars place.
+struct NodeTopology {
+    store::Hash128 State{}, Selection{}, Topology{}, Outputs{};
     vec3 RegionNormal{};
-    std::vector<ExtrusionSource> Vertices;
-    bool operator==(const NodeExtrusion &) const = default;
+    std::vector<ExtrusionSource> Extruded;
+    std::vector<uint32_t> Placed;
+    bool operator==(const NodeTopology &) const = default;
 };
 struct NodeHandle {
     vec3 Center{}, Normal{};
@@ -1167,8 +1194,8 @@ struct NodeErrors {
 struct NodeResults {
     std::map<NodePath, NodeResult, PathOrder> Values;
 };
-struct NodeExtrusions {
-    std::map<NodePath, NodeExtrusion, PathOrder> Values;
+struct NodeTopologies {
+    std::map<NodePath, NodeTopology, PathOrder> Values;
 };
 struct NodeHandles {
     std::map<NodePath, NodeHandle, PathOrder> Values;
@@ -1183,8 +1210,8 @@ template<> struct InnerOf<NodeError> {
 template<> struct InnerOf<NodeResult> {
     using Type = NodeResults;
 };
-template<> struct InnerOf<NodeExtrusion> {
-    using Type = NodeExtrusions;
+template<> struct InnerOf<NodeTopology> {
+    using Type = NodeTopologies;
 };
 template<> struct InnerOf<NodeHandle> {
     using Type = NodeHandles;
@@ -1193,7 +1220,7 @@ template<> struct InnerOf<BooleanPlacement> {
     using Type = BooleanPlacements;
 };
 template<typename T> using Inner = typename InnerOf<T>::Type;
-using OccurrenceStates = TypeList<NodeError, NodeResult, NodeExtrusion, NodeHandle, BooleanPlacement>;
+using OccurrenceStates = TypeList<NodeError, NodeResult, NodeTopology, NodeHandle, BooleanPlacement>;
 // The value the mesh's cooks kept for the occurrence, or null.
 template<typename T> const T *CookedOf(const auto &r, std::span<const state::Entity> path) {
     if (path.size() == 1u) return r.template try_get<const T>(path.front());
@@ -1264,6 +1291,7 @@ template<> inline constexpr field::SpecTable<graph::StoreNamedAttribute> Specs<g
     {&graph::StoreNamedAttribute::Name, {.Help = "Name of the attribute to write. An existing attribute with this name is replaced."}},
     {&graph::StoreNamedAttribute::Domain, {.Help = "Element domain the value is evaluated on and stored on. A field of another domain converts to it."}},
 };
+template<> inline constexpr field::SpecTable<graph::Capture> Specs<graph::Capture>{{&graph::Capture::Domain, {.Help = "Element domain the value is evaluated on and held on. A field of another domain converts to it."}}};
 template<> inline constexpr field::SpecTable<graph::StoreSelection> Specs<graph::StoreSelection>{{&graph::StoreSelection::Name, {.Help = "Name of the Boolean attribute to write. An existing attribute with this name is replaced."}}};
 template<> inline constexpr field::SpecTable<graph::Bake> Specs<graph::Bake>{
     {&graph::Bake::UvSet, {.Min = 0, .Max = 3, .Label = "UV set", .Help = "Texture coordinate set whose layout places the texels on the geometry"}},
