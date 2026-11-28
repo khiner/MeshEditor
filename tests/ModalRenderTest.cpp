@@ -35,6 +35,18 @@ const boost::ut::suite ModalRender = [] {
         expect(MaxDifference(single, split) < Peak(single) * 1e-5f);
     };
 
+    "a strike delivers its whole impulse at any contact time"_test = [] {
+        for (const float contact_samples : {0.3f, 0.6f, 0.96f, 1.f, 1.5f, 1.97f, 2.f, 2.5f, 3.3f, 4.8f, 8.4f, 12.f, 16.5f, 20.f, 137.3f}) {
+            ModalScene scene{1, 8, 0.2f, 1};
+            EnqueueModalEvent(scene.Audio, ImpactEvent(scene.Objects.front(), 1.f, 0, 1.f / contact_samples));
+            std::vector<float> out(256, 0.f);
+            RenderModal(scene.Audio, out.data(), uint32_t(out.size()));
+            double delivered = 0;
+            for (const float force : scene.Audio.ForceScratch) delivered += force;
+            expect(Near(delivered, 1.0, 1e-5)) << contact_samples << delivered;
+        }
+    };
+
     // The click is the rigid recoil the contact force radiates, discretized at the bank rate.
     // Its physical peak belongs to the collision, so oversampling the render must not move it.
     "the acceleration-noise click does not depend on the output sample rate"_test = [] {
@@ -45,7 +57,7 @@ const boost::ut::suite ModalRender = [] {
             const auto step = float(1.0 / (Tau * double(rate)));
             const auto click = RecoilClickFilter(Radius, Volume, Mass, rate);
             // No impulse on the modes, so they stay silent and the click is the whole output.
-            EnqueueModalEvent(scene.Audio, {.Object = scene.Objects.front(), .PulseStep = step, .PulseGamma = 2 * step, .AccelAmp = float(Impulse) * rate, .ClickB0 = click.B0, .ClickA1 = click.A1, .ClickA2 = click.A2});
+            EnqueueModalEvent(scene.Audio, {.Object = scene.Objects.front(), .PulseStep = step, .AccelAmp = float(Impulse) * rate, .ClickB0 = click.B0, .ClickA1 = click.A1, .ClickA2 = click.A2});
             const auto blocks = uint32_t(std::ceil(4 * Tau * double(rate) / BlockSize));
             return Peak(scene.Render(blocks, BlockSize));
         };

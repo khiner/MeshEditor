@@ -26,8 +26,7 @@ struct ModalEvent {
     uint32_t Object{0}; // Object slot in the bank
     uint32_t ExPos{0}; // Excitation position index
     float Jx{0}, Jy{0}, Jz{0}; // Node-local impulse vector
-    float PulseStep{0}; // Per-sample phase increment of the contact pulse
-    float PulseGamma{0}; // Contact pulse amplitude
+    float PulseStep{0}; // One over the contact time in samples
     float AccelAmp{0}; // Scales the unit-sum pulse to the click filter's input force, N
     float ClickB0{0}, ClickA1{0}, ClickA2{0}; // The click's coupled recoil filter (see ModalBank::ActiveImpact::ClickB0)
 };
@@ -140,14 +139,17 @@ struct ModalBank {
     std::vector<float> RadiatorZ1, RadiatorZ2, AirZ1, AirZ2; // Direct-form-II-transposed states.
 
     // One in-flight contact pulse.
-    // It generates a raised-cosine force curve via a unit-circle rotation:
-    // phase <- phase*rot, force = Gamma * (1 - Re(phase)) / 2.
+    // It delivers a raised-cosine force curve whose samples sum to one.
+    // Each sample carries the curve's integral over its own interval, so a contact of any duration delivers the whole impulse.
+    // A contact shorter than one sample delivers it in a single sample.
     struct ActiveImpact {
         uint32_t Object, ExPos, SamplesLeft;
         float Jx, Jy, Jz;
         float PhaseRe, PhaseIm;
         float RotRe, RotIm;
-        float Gamma, AccelAmp;
+        float Step; // One over the contact time in samples
+        float Ramp, Delivered; // Elapsed fraction of the contact time and the share of the impulse delivered so far
+        float AccelAmp;
         // The click is the same recoil radiator driven by this impact's force pulse, with the body's inertia in the loop (RecoilClickFilter).
         // Its b1 = 0 and b2 = -b0 (a pure s numerator), and AccelAmp scales the unit-sum pulse to the force in Newtons.
         // A finished pulse keeps its impact until the filter states drain, so the click ends without a step.

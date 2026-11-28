@@ -30,7 +30,7 @@ void ActivateImpact(const ModalAudio &m, ModalBank &b, const ModalEvent &e) {
         .PhaseRe = 1.f,
         .RotRe = std::cos(theta),
         .RotIm = std::sin(theta),
-        .Gamma = e.PulseGamma,
+        .Step = e.PulseStep,
         .AccelAmp = e.AccelAmp,
         .ClickB0 = e.ClickB0,
         .ClickA1 = e.ClickA1,
@@ -491,7 +491,8 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         auto &im = b.Impacts[i];
         float phase_re = im.PhaseRe, phase_im = im.PhaseIm;
         const auto rot_re = im.RotRe, rot_im = im.RotIm;
-        const auto gamma = im.Gamma;
+        const auto step = im.Step;
+        auto ramp = im.Ramp, delivered = im.Delivered;
         const auto amp = im.AccelAmp;
         const auto b0 = im.ClickB0, a1 = im.ClickA1, a2 = im.ClickA2;
         const auto impact_click_gain = click_gain * std::atomic_ref{b.ListenerGain[im.Object]}.load(std::memory_order_relaxed);
@@ -504,7 +505,11 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
                 const float re = phase_re * rot_re - phase_im * rot_im;
                 phase_im = phase_re * rot_im + phase_im * rot_re;
                 phase_re = re;
-                cur = gamma * 0.5f * (1.f - phase_re);
+                ramp += step;
+                // The curve's running integral is the elapsed fraction less sin(phase) / 2 pi, and the last sample completes it.
+                const float through = left == 1 ? 1.f : ramp - phase_im * (0.5f * std::numbers::inv_pi_v<float>);
+                cur = through - delivered;
+                delivered = through;
                 --left;
             }
             force[s] = cur;
@@ -517,6 +522,8 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         im.PhaseRe = phase_re;
         im.PhaseIm = phase_im;
         im.SamplesLeft = left;
+        im.Ramp = ramp;
+        im.Delivered = delivered;
         im.ClickZ1 = z1;
         im.ClickZ2 = z2;
     }

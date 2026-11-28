@@ -254,7 +254,6 @@ void TriggerModalStrike(state::Registry &r, state::Entity e, uint32_t excitable_
             .Jy = dir.y * force,
             .Jz = dir.z * force,
             .PulseStep = step,
-            .PulseGamma = 2 * step,
             .AccelAmp = click_amp,
             .ClickB0 = click.B0,
             .ClickA1 = click.A1,

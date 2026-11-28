@@ -35,7 +35,7 @@ inline ModalModes MakeModes(uint32_t mode_count, float longest_t60, float shape_
 }
 
 inline ModalEvent ImpactEvent(uint32_t object, float impulse, uint32_t ex_pos = 0, float pulse_step = 1.f / 300.f) {
-    return {.Object = object, .ExPos = ex_pos, .Jx = impulse, .Jy = 0.5f * impulse, .PulseStep = pulse_step, .PulseGamma = 20.f};
+    return {.Object = object, .ExPos = ex_pos, .Jx = impulse, .Jy = 0.5f * impulse, .PulseStep = pulse_step};
 }
 
 // A bank of identical objects, ready to render.
