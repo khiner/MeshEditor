@@ -1149,6 +1149,33 @@ int main(int argc, const char **argv) {
         };
     }
 
+    // An area light's node exports without a light, and every other light stays on its node.
+    if (const fs::path lamp = SamplePath("external/glTF-Sample-Assets/Models/LightsPunctualLamp/glTF/LightsPunctualLamp.gltf"); fs::exists(lamp)) {
+        boost::ut::test("area_light_exports_as_node") = [&] {
+            const auto intensities = [](const state::Registry &r) {
+                std::map<std::string, float> by_name;
+                for (const auto [e, light] : r.view<const SceneLight>().each()) {
+                    if (!IsAreaLight(light.Type)) by_name.emplace(GetName(r, e), light.Intensity);
+                }
+                return by_name;
+            };
+            std::map<std::string, float> punctual;
+            size_t nodes = 0;
+            const auto reloaded = RoundtripEdited(lamp, edit_root / "LightsPunctualLamp-area.gltf", [&](SceneFixture &fx) {
+                nodes = fx.R.view<const GltfNode>().size();
+                for (const auto [e, node] : fx.R.view<const GltfNode>().each()) {
+                    if (node.Light == 1u) fx.R.edit<SceneLight>(e).Type = LightType::Rectangle;
+                }
+                punctual = intensities(fx.R);
+            });
+            if (!reloaded) return;
+            expect(punctual.size() == 4u);
+            expect(intensities(reloaded->R) == punctual);
+            expect(reloaded->R.view<const SceneLight>().size() == punctual.size());
+            expect(reloaded->R.view<const GltfNode>().size() == nodes);
+        };
+    }
+
     // An external image keeps its file reference and requires that file even after GPU upload.
     const fs::path box_external = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
     if (fs::exists(box_external)) {

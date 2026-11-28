@@ -405,7 +405,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto e : r.view<const Perspective>()) camera_entities.emplace_back(e);
     for (const auto e : r.view<const Orthographic>()) camera_entities.emplace_back(e);
     const auto camera_entities_ordered = ordered_by_source(camera_entities, node_of(&GltfNode::Camera));
-    const auto light_entities_ordered = ordered_by_source(r.view<const SceneLight>(), node_of(&GltfNode::Light));
+    // KHR_lights_punctual holds directional, point and spot lights, so the node of an area light exports without a light.
+    std::vector<state::Entity> light_entities;
+    for (const auto [e, light] : r.view<const SceneLight>().each()) {
+        if (!IsAreaLight(light.Type)) light_entities.emplace_back(e);
+        else std::println(stderr, "Warning: light '{}' is an area light, which glTF cannot store. Its node exports without a light.", GetName(r, e));
+    }
+    const auto light_entities_ordered = ordered_by_source(light_entities, node_of(&GltfNode::Light));
     std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
     for (uint32_t i = 0; i < camera_entities_ordered.size(); ++i) camera_entity_to_index[camera_entities_ordered[i]] = i;
     for (uint32_t i = 0; i < light_entities_ordered.size(); ++i) light_entity_to_index[light_entities_ordered[i]] = i;
@@ -1358,7 +1364,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *node = r.try_get<const GltfNode>(entity);
         auto pl = r.get<const SceneLight>(entity);
         OverlayRest(r, entity, state::Key<SceneLight>(), std::as_writable_bytes(std::span{&pl, 1}));
-        if (IsAreaLight(pl.Type)) return std::unexpected("glTF KHR_lights_punctual cannot represent area lights. Save the native project to preserve them.");
         asset.lights.emplace_back(ConvertLightToFg(pl, node ? node->LightName : std::string_view{}));
     }
 
